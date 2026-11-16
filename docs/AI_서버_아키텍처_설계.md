@@ -9,11 +9,11 @@
 
 | # | 항목 | 결정 |
 |---|---|---|
-| 1 | 기술 스택 | Python 3.11 · `confluent-kafka` · `boto3` · `pydantic-settings` · `psycopg` 3 · `pytest` |
+| 1 | 기술 스택 | Python 3.11 · `confluent-kafka` · `boto3` · `pydantic-settings` · `PyMySQL` · `pytest` (DB 드라이버는 2026-11-16 `psycopg` 3 → `PyMySQL`) |
 | 2 | 실행 구조 | 단일 프로세스, 워커 스레드 2개 (요청·완료) |
-| 3 | 연결 정보 보관 | **AI 전용 DB (EC2 + PostgreSQL)**. 계획 문서 9장 ② 해소 |
+| 3 | 연결 정보 보관 | **AI 전용 DB (MySQL 8.4 컨테이너)**. test는 백엔드 test 서버 EC2에 AI 전용 컨테이너 (2026-11-16 PostgreSQL에서 전환) |
 | 4 | `inference_id` | AI 서버가 발급하고 **S3 업로드 전에 DB에 기록** |
-| 5 | 입력·결과 저장 | **원본 JSON 그대로** `jsonb`에 저장 (해시 안 씀) |
+| 5 | 입력·결과 저장 | **원본 JSON 그대로** `JSON` 컬럼에 저장 (해시 안 씀) |
 | 6 | 중복 소비 | `(topic, partition, offset)`으로 감지. 이미 처리한 메시지는 호출을 건너뜀 |
 | 7 | SNS 수신 | SNS → SQS 구독 + DLQ. AI 서버가 운영 (9장 ④) |
 | 8 | 완료 메시지 키 | `str(record_card_id)` (계획 9장 ⑤ 해소) |
@@ -29,7 +29,7 @@
 requested ──────▶ │    파싱 → 중복 확인 → DB 기록 → S3 업로드 → 호출          │
                   │    ├ 거부 → Publisher (INVOKE 실패)                        │
                   │    └ 202 → 오프셋 커밋                                     │      [EC2]
-                  │                                                           │ ◀──▶ PostgreSQL
+                  │                                                           │ ◀──▶ MySQL
 [SQS] ◀─ SNS ◀── SageMaker                                                    │
          ────────▶│ ② CompletionWorker (스레드 B)                             │
                   │    알림 → DB 조회 → 결과/실패 JSON 읽기 → 저장 → 발행    │
@@ -60,7 +60,7 @@ ai-server/
 │  ├ messages.py        # 순수 함수: 요청 파싱, S3 키, 완료 메시지 조립(4가지)
 │  ├ notification.py    # SNS 알림 파싱 → dev 스모크 후 확정
 │  ├ ports.py           # Protocol: ObjectStore·AsyncInvoker·NotificationQueue·Publisher·InferenceRepository
-│  ├ adapters/          # kafka.py · s3.py · sagemaker.py · sqs.py · postgres.py
+│  ├ adapters/          # kafka.py · s3.py · sagemaker.py · sqs.py · mysql.py
 │  ├ request_flow.py    # 흐름 ①
 │  ├ completion_flow.py # 흐름 ②
 │  ├ workers.py         # 워커 루프 (요청: poll→처리→커밋 / 완료: 수신→처리)
@@ -84,39 +84,49 @@ ai-server/
 ### 3.1 테이블
 
 ```sql
+-- AI 서버 요청 1건 = 행 1개. 설계: docs/AI_서버_아키텍처_설계.md 3장 (MySQL 8.4)
+-- 시각은 UTC (연결 시 time_zone = '+00:00')
 CREATE TABLE inference_request (
-  inference_id        uuid PRIMARY KEY,           -- AI 서버가 발급
-  user_id             bigint      NOT NULL,
-  record_card_id      bigint      NOT NULL,
-  status              text        NOT NULL,       -- RECEIVED·UPLOADED·INVOKING·INVOKED·SUCCEEDED·FAILED
-  failed_stage        text,                       -- INVOKE·INFERENCE
-  endpoint_name       text        NOT NULL,
+  inference_id        CHAR(36)      NOT NULL,       -- AI 서버가 호출 전에 발급 (UUID 문자열)
+  user_id             BIGINT        NOT NULL,
+  record_card_id      BIGINT        NOT NULL,
+  status              VARCHAR(16)   NOT NULL,
+  failed_stage        VARCHAR(16)   NULL,
+  endpoint_name       VARCHAR(255)  NOT NULL,
 
-  input_json          jsonb       NOT NULL,       -- 요청 원본 그대로
-  result_json         jsonb,                      -- 컨테이너 성공/실패 JSON 전체 (AI 내부 보관용. 완료 메시지는 4.1 형식으로 추출)
-  error_code          text,                       -- 발행한 result.error.code (INFERENCE_FAILED 포함)
-  error_message       text,                       -- 발행한 result.error.message (실패 파일이 JSON이 아니면 파일 내용 전체)
+  input_json          JSON          NOT NULL,       -- 요청 원본 (JSON 컬럼이라 키 순서·공백은 정리됨)
+  result_json         JSON          NULL,           -- 컨테이너 성공/실패 파일 전체 (JSON일 때만)
+  error_code          VARCHAR(64)   NULL,           -- 발행한 result.error.code
+  error_message       MEDIUMTEXT    NULL,           -- 발행한 result.error.message (실패 파일 전체일 수 있음)
 
-  input_s3_key        text        NOT NULL,
-  output_location     text,                       -- 202 응답 헤더 X-Amzn-SageMaker-OutputLocation
-  failure_location    text,                       -- 202 응답 헤더 X-Amzn-SageMaker-FailureLocation
-  invoke_http_status  int,
-  invoke_error_code   text,
-  invoke_message      text,
+  input_s3_key        VARCHAR(1024) NOT NULL,
+  output_location     VARCHAR(1024) NULL,           -- 202 응답 OutputLocation
+  failure_location    VARCHAR(1024) NULL,           -- 202 응답 FailureLocation
+  invoke_http_status  INT           NULL,
+  invoke_error_code   VARCHAR(128)  NULL,
+  invoke_message      TEXT          NULL,
 
-  kafka_topic         text        NOT NULL,
-  kafka_partition     int         NOT NULL,
-  kafka_offset        bigint      NOT NULL,
+  kafka_topic         VARCHAR(255)  NOT NULL,
+  kafka_partition     INT           NOT NULL,
+  kafka_offset        BIGINT        NOT NULL,
 
-  created_at          timestamptz NOT NULL DEFAULT now(),
-  invoked_at          timestamptz,                -- INVOKING 기록 시각 (호출 직전, 무응답 점검 기준)
-  completed_at        timestamptz,
-  published_at        timestamptz,                -- 완료 메시지 발행 확인 시각
-  UNIQUE (kafka_topic, kafka_partition, kafka_offset)
-);
-CREATE INDEX ix_req_card    ON inference_request (record_card_id, created_at DESC);
-CREATE INDEX ix_req_pending ON inference_request (status, invoked_at) WHERE status IN ('INVOKING', 'INVOKED');
+  created_at          DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  invoked_at          DATETIME(6)   NULL,           -- INVOKING 기록 시각 (무응답 점검 기준)
+  completed_at        DATETIME(6)   NULL,
+  published_at        DATETIME(6)   NULL,           -- 완료 메시지 발행 확인 시각
+
+  PRIMARY KEY (inference_id),
+  UNIQUE KEY uq_req_kafka (kafka_topic, kafka_partition, kafka_offset),
+  KEY ix_req_card (record_card_id, created_at),
+  KEY ix_req_pending (status, invoked_at),           -- 무응답 점검 (MySQL은 부분 인덱스 없음)
+  CONSTRAINT ck_req_status CHECK (status IN ('RECEIVED', 'UPLOADED', 'INVOKING', 'INVOKED', 'SUCCEEDED', 'FAILED')),
+  CONSTRAINT ck_req_failed_stage CHECK (failed_stage IN ('INVOKE', 'INFERENCE'))
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
 ```
+
+- 정본은 `migrations/001_init.sql` (MySQL 8.4, 2026-11-16 PostgreSQL에서 전환)
+- MySQL 차이: 부분 인덱스가 없어 `ix_req_pending`은 일반 인덱스, `inference_id`는 `CHAR(36)`, 시각은 UTC `DATETIME(6)`
+- ⚠️ MySQL은 DDL을 되돌리지 못한다 → 마이그레이션 중간 실패 시 앞 문장이 남음. 파일 하나에 DDL은 되도록 하나씩
 
 - 사진 정보는 `input_json.photos`, 음악 키는 `result_json.photo_music`에 있다 → 사진 테이블 없음. 사진별 조회가 잦아지면 추가
 - 환경별로 **DB를 따로** 둔다: `runiverse_ai_dev` · `runiverse_ai_test` · `runiverse_ai_prod`
@@ -260,12 +270,12 @@ if prev is not None:
 
 ---
 
-## 🛡️ 7. DB 서버 (EC2)
+## 🛡️ 7. DB 서버
 
 | 항목 | 기준 |
 |---|---|
-| 네트워크 | private 서브넷, 퍼블릭 IP 없음 |
-| 보안 그룹 | 5432는 AI 서버에서만 허용 |
+| 위치 (test) | 백엔드 test 서버 EC2(`<DB_SERVER_EC2>`)에 **AI 전용 `mysql:8.4` 컨테이너** (2026-11-16) |
+| 네트워크 | private 서브넷, 퍼블릭 IP 없음. 3306은 같은 서버의 AI 서버에서만 (외부 공개 안 함) |
 | 디스크 | EBS 암호화, 스냅샷 백업 |
 | 계정 | 앱 전용 사용자. 비밀번호는 환경 변수로만 |
 | 운영 | 패치·백업·모니터링은 직접 (RDS가 아님) |
@@ -283,10 +293,10 @@ if prev is not None:
 | 0. 준비 | 저장소, `pyproject`, 설정·로그 골격 | 잘못된 설정이면 시작 실패 | — | — |
 | 1. 순수 로직 | `messages.py` | **검증 ①** 단위 테스트 (완료 메시지 4가지) | — | — |
 | 2. 흐름 + Fake | `ports`·`fakes`·두 흐름 | Fake로 성공·컨테이너 실패·무응답·거부·중복 offset | — | — |
-| 2.5 DB | 마이그레이션, Postgres Repository | 로컬 Docker PG: 상태 전이, 중복 offset, `published_at` 멱등 | — | — |
+| 2.5 DB | 마이그레이션, MySQL Repository | 로컬 Docker `mysql:8.4`: 상태 전이, 중복 offset, `published_at` 멱등 | — | — |
 | 3. Kafka | Kafka 어댑터, 수동 커밋, `main` | **검증 ②** `KAFKA_ENV=dev`: 소비·발행, 재시작 후 재소비 | — | — |
 | 4. S3 + 호출 | S3·SageMaker 어댑터 | 없는 엔드포인트로 호출 거부 → `INVOKE` 발행 | IAM 권한 | — |
-| 4.5 DB 서버 | EC2 DB 연결 | 연결·마이그레이션 적용 | EC2·보안 그룹·EBS | **시작** |
+| 4.5 DB 서버 | test 서버에 MySQL 컨테이너 | 연결·마이그레이션 적용 | — (기존 EC2) | — |
 | 5. 알림 인프라 | — | SNS 2개 + SQS + DLQ, 엔드포인트 Config 교체 | SNS·SQS·SageMaker | **시작** |
 | 6. 스모크 | 실제 알림·실패 파일 수집 → `notification.py` 확정 | 컨테이너 단독 스모크 → **검증 ③** | 엔드포인트 테스트 | 지속 |
 | 7. 실패 경로 | 타임아웃 파라미터, 4.3 결정 | **검증 ④** 400·거부·실패 파일·시간 초과 | 끝나면 엔드포인트 정리 | — |

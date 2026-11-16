@@ -72,7 +72,7 @@ class FakeQueue:
 
 
 class FakeRepository:
-    """상태 전이 규칙은 Postgres 구현과 같아야 한다 (Phase 2.5에서 같은 테스트로 확인)."""
+    """상태 전이 규칙은 MySQL 구현과 같아야 한다 (test_repository_contract.py)."""
 
     def __init__(self):
         self.rows: dict[str, InferenceRecord] = {}
