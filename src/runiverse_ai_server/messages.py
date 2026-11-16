@@ -121,6 +121,12 @@ def unusable_output(inference_id: str, record_card_id: int, reason: str) -> Comp
     return _message(inference_id, record_card_id, "FAILED", "INFERENCE", _accepted(), {"error": error})
 
 
+def no_response(inference_id: str, record_card_id: int, waited_seconds: int) -> CompletionMessage:
+    """제한 시간 안에 결과·실패 파일이 생기지 않았다 (컨테이너 응답 없음)."""
+    error = {"code": INFERENCE_FAILED, "message": f"응답 없음: 호출 후 {waited_seconds}초 동안 결과·실패 파일이 없습니다"}
+    return _message(inference_id, record_card_id, "FAILED", "INFERENCE", _accepted(), {"error": error})
+
+
 def invoke_failed(inference_id: str, record_card_id: int, http_status: int | None,
                   error_code: str, message: str) -> CompletionMessage:
     """호출 거부(400·500·503) 또는 SageMaker 응답 없음(http_status=None: 업로드 실패·네트워크 오류)."""

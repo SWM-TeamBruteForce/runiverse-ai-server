@@ -27,7 +27,7 @@
 | 요청 토픽 소비 | 음악 생성·분석 (컨테이너 몫) |
 | `inference_id`(UUID) 생성, 입력 JSON을 S3 `async/inputs/`에 업로드 | 입력 내용 해석·변환 (그대로 전달) |
 | `InvokeEndpointAsync` 호출 | **자동 재시도** (사용자 재요청 → 새 메시지) |
-| SNS 성공·실패 알림 수신 | 카드·음악 상태 저장 (백엔드 DB 몫) |
+| 완료 감지 (S3 결과·실패 파일 주기 확인) | 카드·음악 상태 저장 (백엔드 DB 몫) |
 | S3 결과·실패 JSON 읽기 | `audio/` 음악 파일 읽기·검증 (백엔드 몫) |
 | 완료 토픽 발행 | presigned URL 발급 |
 
@@ -48,7 +48,7 @@
    │     ├ 거부(400·500·503) 또는 응답 없음(http_status=null) → ⑦로 바로 (failed_stage=INVOKE, result=null)
    │     └ 202 → inference_id ↔ record_card_id, OutputLocation·FailureLocation 보관
    ▼ (컨테이너 처리, 수 분)
-   ▼ ⑤ SNS 성공/실패 알림 수신 (SQS 구독 권장)
+   ▼ ⑤ 결과·실패 파일 주기 확인 (S3, 2026-11-16 SNS·SQS 대신)
    ▼ ⑥ 성공: OutputLocation JSON 읽기 / 실패: FailureLocation JSON 읽기
    ▼ ⑦ 완료 메시지 발행
 [완료 토픽] {env}.record-card.music.generated
@@ -123,7 +123,6 @@
 | `INPUT_PREFIX` | `async/inputs/local` | `async/inputs/test` | `async/inputs/prod` |
 | `ENDPOINT_NAME` | `runiverse-music-test-v1` | `runiverse-music-test-v1` | 미정 |
 | 리전 | `ap-northeast-2` | 동일 | 동일 |
-| SQS 큐 (SNS 구독) | 미정 | 미정 | 미정 |
 
 - ⚠️ **개발에는 `KAFKA_ENV=dev`만** 쓴다. `test`는 테스트 서버와 메시지가 겹친다
 - Kafka 접속 (백엔드 공유값)
@@ -138,7 +137,7 @@
 
 **`inference_id` ↔ 요청 정보 보관** (9장 ②)
 - ✅ **AI 전용 DB에 저장**으로 결정 (2026-11-13, 2026-11-16 PostgreSQL → MySQL 8.4). 상세는 `AI_서버_아키텍처_설계.md` 3장. 아래 후보는 검토 기록
-- SNS 알림에는 `inferenceId`만 있으므로 `record_card_id`를 따로 알아야 한다
+- 결과 위치(202 응답)와 `record_card_id`를 함께 보관해야 완료 메시지를 만들 수 있다
 - 후보
   - 메모리: 가장 단순. 서버 재시작 시 진행 중 요청을 잃음
   - Redis·DB: 재시작에도 유지. 구성 요소 추가
@@ -160,12 +159,11 @@
 
 | 대상 | 필요한 권한 |
 |---|---|
-| AI 서버 실행 주체 | `async/inputs/{env}/*` 쓰기 · `async/outputs/{env}/*`·`async/failures/{env}/*` 읽기 · `sagemaker:InvokeEndpointAsync` · SQS 수신·삭제 |
-| SNS 토픽 | SageMaker가 발행, SQS 큐가 구독 (큐 정책에서 SNS 허용) |
+| AI 서버 실행 주체 | `async/inputs/{env}/*` 쓰기 · `async/outputs/{env}/*`·`async/failures/{env}/*` 읽기 · `sagemaker:InvokeEndpointAsync` · 결과 prefix `s3:ListBucket` (없는 파일이 404로 오게) |
 | SageMaker 실행 Role | 이미 구성됨 (사진 버킷 읽기, `audio/*` 쓰기) |
 
 - **AWS 리소스 생성·변경은 개발자가 Console에서 직접** 한다 (`ai` 저장소와 같은 원칙)
-- 엔드포인트 Config의 SNS 성공·실패 토픽을 AI 서버가 구독할 토픽으로 지정해야 한다 → 엔드포인트 재설정 필요 (새 Config → 엔드포인트 업데이트)
+- SNS·SQS를 쓰지 않으므로 엔드포인트 Config에 알림 토픽을 지정하지 않는다 (2026-11-16)
 - **회고 원문·사진 캡션을 로그에 남기지 않는다** (개인정보). 로그 키: `inference_id`·`record_card_id`·단계·소요 시간·오류 코드
 - 입력 JSON(회고 원문 포함)은 `async/inputs/`에 7일 보관 후 만료 (테스트 버킷 수명 주기 규칙)
 
@@ -177,14 +175,14 @@
 |---|---|---|
 | ① 단위 테스트 | 로컬 | 메시지 파싱, S3 키 생성, 완료 메시지 조립 (4장 표의 4가지 경우) |
 | ② Kafka 연동 | 로컬 + `KAFKA_ENV=dev` | 소비·발행, 오프셋 커밋, 재시작 후 재소비 |
-| ③ AWS 연동 | dev 엔드포인트 (**과금**) | 입력 업로드 → 호출 202 → SNS·SQS 알림 → 결과 읽기 → 완료 발행 |
+| ③ AWS 연동 | dev 엔드포인트 (**과금**) | 입력 업로드 → 호출 202 → 결과 파일 확인 → 완료 발행 |
 | ④ 실패 경로 | dev 엔드포인트 | 잘못된 입력(400), 없는 엔드포인트 이름(호출 거부), 실패 위치 파일 형식 |
 
 - ③ 전에 컨테이너 단독 스모크(Console에서 S3 입력 → 엔드포인트 테스트)를 먼저 통과시킨다
 - ⚠️ **확인 필요**
   - 실패 위치 파일이 컨테이너 JSON 그대로인지, SageMaker가 감싸는지
-  - SNS 알림 메시지의 실제 필드 (`inferenceId`, 상태, 출력·실패 위치가 어떤 키로 오는지)
-  - → ③·④에서 실제 메시지를 보고 파싱 규칙을 정한다
+  - 시간 초과 시 SageMaker가 실패 파일을 남기는지
+  - → ③·④에서 실제 파일을 보고 확인한다
 
 ---
 
@@ -195,7 +193,7 @@
 | ① | ~~요청 메시지 형태~~ | ✅ 입력 JSON 그대로, `generation_id` 없음 (2026-11-13) | 백엔드 |
 | ② | ~~연결 정보 보관~~ | ✅ AI 전용 DB(MySQL 8.4, 2026-11-16 전환) `inference_request`. 입력·결과 원본도 저장 (2026-11-13) | AI |
 | ③ | 무응답 타임아웃 | 기준 시간과 `INFERENCE_FAILED` 발행 주체 | AI + 백엔드 |
-| ④ | ~~SNS 수신 방식~~ | ✅ SNS → SQS 구독 + DLQ, AI 서버가 운영 (2026-11-13) | AI |
+| ④ | ~~SNS 수신 방식~~ | ✅ SNS·SQS 쓰지 않음. 202 응답의 결과 위치를 S3에서 주기적으로 확인 (2026-11-16, 2026-11-13 SNS→SQS 결정 대체) | AI |
 | ⑤ | ~~파티션 키~~ | ✅ 완료 메시지 키 = `record_card_id`(문자열). `null`이면 키 없이 발행. Notion 4.1 반영 (2026-11-14) | 백엔드 |
 | ⑥ | 기술 스택·배포 위치 | ✅ 스택: Python 3.11 · confluent-kafka · boto3 · PyMySQL (2026-11-16). test는 백엔드 test 서버 EC2에 같이 배포, AI DB는 그 서버의 MySQL 컨테이너 (2026-11-16). ⏳ AI 서버 실행 환경(EC2·ECS 등)·AWS 자격 증명 방식은 미정 | AI |
 | ⑦ | 운영 환경 값 | 운영 `KAFKA_ENV`·엔드포인트 이름 | 백엔드 + AI |
@@ -211,6 +209,6 @@
 1. 9장 ⑥ 결정 → 저장소 생성
 2. Kafka 소비·발행만 먼저 (AWS 없이, 받은 메시지를 로그 대신 ID만 출력)
 3. S3 업로드 + `InvokeEndpointAsync` → 호출 거부 경로 완료 메시지까지
-4. SNS → SQS 구성(Console) → 알림 수신 → 결과 읽기 → 성공·실패 완료 메시지
+4. 결과·실패 파일 주기 확인 → 성공·실패 완료 메시지 (SNS·SQS 없음, 2026-11-16)
 5. 연결 정보 보관(9장 ②)·타임아웃(9장 ③)
 6. dev 엔드포인트로 8장 ③·④ 검증 후 백엔드와 통합 테스트

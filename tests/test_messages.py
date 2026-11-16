@@ -15,6 +15,7 @@ from runiverse_ai_server.messages import (
     invalid_message,
     invoke_failed,
     kafka_key,
+    no_response,
     parse_request,
     succeeded,
     unusable_output,
@@ -176,6 +177,12 @@ def test_unusable_output_is_inference_failed():
     msg = unusable_output(IID, 101, "성공 결과가 JSON이 아닙니다")
 
     assert msg == _failed_inference(INFERENCE_FAILED, "성공 결과가 JSON이 아닙니다")
+
+
+def test_no_response_is_inference_failed_with_waited_time():
+    msg = no_response(IID, 101, waited_seconds=22500)
+
+    assert msg == _failed_inference(INFERENCE_FAILED, "응답 없음: 호출 후 22500초 동안 결과·실패 파일이 없습니다")
 
 
 def test_inference_failed_without_file():

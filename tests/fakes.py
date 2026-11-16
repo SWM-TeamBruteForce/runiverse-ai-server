@@ -10,7 +10,6 @@ from runiverse_ai_server.ports import (
     Invocation,
     InferenceRecord,
     InvokeError,
-    Notification,
     PublishError,
     UploadError,
 )
@@ -63,14 +62,6 @@ class FakePublisher:
         self.messages.append(message)
 
 
-class FakeQueue:
-    def __init__(self):
-        self.deleted: list[Notification] = []
-
-    def delete(self, notification: Notification) -> None:
-        self.deleted.append(notification)
-
-
 class FakeRepository:
     """상태 전이 규칙은 MySQL 구현과 같아야 한다 (test_repository_contract.py)."""
 
@@ -90,6 +81,11 @@ class FakeRepository:
     def get(self, inference_id: str) -> InferenceRecord | None:
         return self.rows.get(inference_id)
 
+    def list_pending(self, limit: int) -> list[InferenceRecord]:
+        rows = [r for r in self.rows.values() if r.published_at is None and (
+            r.status in ("INVOKING", "INVOKED", "SUCCEEDED") or (r.status == "FAILED" and r.failed_stage == "INFERENCE"))]
+        return sorted(rows, key=lambda r: r.invoked_at)[:limit]
+
     def insert_received(self, record: InferenceRecord, input_json: bytes) -> None:
         if self.find_by_offset(record.kafka_topic, record.kafka_partition, record.kafka_offset):
             raise DuplicateOffsetError(record.kafka_offset)
@@ -100,7 +96,7 @@ class FakeRepository:
         self._update(inference_id, status="UPLOADED")
 
     def mark_invoking(self, inference_id: str) -> None:
-        self._update(inference_id, status="INVOKING")
+        self._update(inference_id, status="INVOKING", invoked_at=_now())
 
     def mark_invoked(self, inference_id: str, invocation: Invocation) -> None:
         if self.rows[inference_id].status == "INVOKING":  # 완료가 먼저 기록됐으면 되돌리지 않는다

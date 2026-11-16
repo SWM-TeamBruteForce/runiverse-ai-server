@@ -34,7 +34,11 @@ class S3ObjectStore:
         return f"s3://{self.bucket}/{key}"
 
     def read_text(self, uri: str) -> str | None:
-        """없으면 None. 그 밖의 오류는 그대로 올린다 (완료 흐름이 실패 → SQS가 다시 보낸다)."""
+        """없으면 None. 그 밖의 오류는 그대로 올린다 (완료 흐름 실패 → 다음 확인 때 다시).
+
+        ⚠️ 실행 주체에 s3:ListBucket이 없으면 없는 객체도 404가 아니라 403(AccessDenied)이 온다
+        → "아직 결과 없음"을 구분하지 못한다. IAM에 해당 prefix ListBucket을 함께 준다.
+        """
         bucket, key = parse_s3_uri(uri)
         try:
             body = self.client.get_object(Bucket=bucket, Key=key)["Body"].read()

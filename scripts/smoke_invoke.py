@@ -5,7 +5,7 @@
     .venv/Scripts/python scripts/smoke_invoke.py --sample no_photo
 
 - 샘플: scripts/samples/{no_photo, with_photo, invalid_unknown_field}.json
-- SNS 미구성 상태라 S3 결과 위치를 주기적으로 확인한다
+- 서버와 같은 방식으로 S3 결과 위치를 주기적으로 확인한다 (SNS·SQS 쓰지 않음)
 - 판정하지 않고 받은 그대로 출력한다 (실패 파일 형식 확인용)
 - ⚠️ 엔드포인트가 0대에서 시작하면 인스턴스가 뜨면서 과금되고, 콜드 스타트로 10분 이상 걸릴 수 있다
 """

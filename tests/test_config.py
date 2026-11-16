@@ -18,7 +18,6 @@ def env(monkeypatch, tmp_path):
         "AI_BUCKET_NAME": "bucket-test",
         "INPUT_PREFIX": "async/inputs/local",
         "ENDPOINT_NAME": "endpoint-test",
-        "SQS_QUEUE_URL": "https://sqs.ap-northeast-2.amazonaws.com/000000000000/queue-test",
         "DB_HOST": "localhost",
         "DB_NAME": "runiverse_ai_dev",
         "DB_USER": "runiverse_ai",
@@ -54,7 +53,7 @@ def test_uses_sagemaker_default_timeouts(env):
     assert settings.request_ttl_seconds == 21600
 
 
-@pytest.mark.parametrize("missing", ["KAFKA_PASSWORD", "DB_PASSWORD", "ENDPOINT_NAME", "SQS_QUEUE_URL"])
+@pytest.mark.parametrize("missing", ["KAFKA_PASSWORD", "DB_PASSWORD", "ENDPOINT_NAME"])
 def test_fails_when_required_value_missing(env, missing):
     env.delenv(missing)
 
@@ -115,7 +114,7 @@ def test_secrets_hidden_in_repr(env):
 
 
 def test_db_settings_load_without_kafka_or_aws(env):
-    for key in ["KAFKA_ENV", "KAFKA_PASSWORD", "ENDPOINT_NAME", "SQS_QUEUE_URL"]:
+    for key in ["KAFKA_ENV", "KAFKA_PASSWORD", "ENDPOINT_NAME"]:
         env.delenv(key)
 
     settings = load_settings(DbSettings)  # 마이그레이션은 DB 값만 있으면 된다
@@ -131,10 +130,25 @@ def test_db_settings_require_password(env):
 
 
 def test_kafka_settings_load_without_aws_or_db(env):
-    for key in ["ENDPOINT_NAME", "SQS_QUEUE_URL", "DB_HOST", "DB_PASSWORD"]:
+    for key in ["ENDPOINT_NAME", "DB_HOST", "DB_PASSWORD"]:
         env.delenv(key)
 
     settings = load_settings(KafkaSettings)  # Kafka 점검 스크립트는 Kafka 값만 있으면 된다
 
     assert (settings.kafka_username, settings.request_topic) == \
         ("dev.runiverse-ai", "dev.record-card.music.requested")
+
+
+def test_completion_polling_defaults(env):
+    settings = load_settings()
+
+    assert settings.completion_poll_seconds == 10
+    assert settings.response_deadline_seconds == 900 + 21600  # SageMaker가 요청을 포기하는 시점
+
+
+@pytest.mark.parametrize("value", ["0", "301"])
+def test_rejects_completion_poll_out_of_range(env, value):
+    env.setenv("COMPLETION_POLL_SECONDS", value)
+
+    with pytest.raises(ConfigError, match="completion_poll_seconds"):
+        load_settings()

@@ -15,7 +15,7 @@
 | 4 | `inference_id` | AI 서버가 발급하고 **S3 업로드 전에 DB에 기록** |
 | 5 | 입력·결과 저장 | **원본 JSON 그대로** `JSON` 컬럼에 저장 (해시 안 씀) |
 | 6 | 중복 소비 | `(topic, partition, offset)`으로 감지. 이미 처리한 메시지는 호출을 건너뜀 |
-| 7 | SNS 수신 | SNS → SQS 구독 + DLQ. AI 서버가 운영 (9장 ④) |
+| 7 | 완료 감지 | ~~SNS → SQS + DLQ~~ → **202 응답의 결과 위치를 S3에서 주기적으로 확인** (2026-11-16). SNS·SQS 없음 |
 | 8 | 완료 메시지 키 | `str(record_card_id)` (계획 9장 ⑤ 해소) |
 | 9 | 업데이트 최적화 | 1차 구현에서는 **항상 전체 생성**. 저장만 해 두고 분기는 최적화 단계에서 |
 
@@ -30,9 +30,9 @@ requested ──────▶ │    파싱 → 중복 확인 → DB 기록 �
                   │    ├ 거부 → Publisher (INVOKE 실패)                        │
                   │    └ 202 → 오프셋 커밋                                     │      [EC2]
                   │                                                           │ ◀──▶ MySQL
-[SQS] ◀─ SNS ◀── SageMaker                                                    │
+[S3 결과·실패 파일] ◀── SageMaker                                                   │
          ────────▶│ ② CompletionWorker (스레드 B)                             │
-                  │    알림 → DB 조회 → 결과/실패 JSON 읽기 → 저장 → 발행    │
+                  │    10초마다 발행 전 행 조회 → S3 파일 확인 → 저장 → 발행 │
 generated ◀────── │ Publisher (Kafka Producer, 두 워커가 같이 씀)             │
                   └───────────────────────────────────────────────────────────┘
 ```
@@ -40,7 +40,7 @@ generated ◀────── │ Publisher (Kafka Producer, 두 워커가 같
 - 두 흐름은 독립된 루프. 만나는 곳은 DB `inference_request` 행 하나
 - **워커 오류 처리** (2026-11-16)
   - 요청 워커: 처리 중 예외 → 커밋 없이 **서버 전체 중지**(종료 코드 1). 재시작하면 커밋 위치부터 다시 받음
-  - 완료 워커: 알림 1건 실패 → 로그 후 다음 알림. SQS 메시지를 지우지 않았으니 다시 오고, 한도를 넘으면 DLQ
+  - 완료 워커: 1건 실패 → 로그 후 다음 건. `published_at`이 비어 있으니 다음 확인 때 다시 처리
   - 종료 신호 → 처리 중인 1건을 끝내고 Kafka 소비자 닫기·발행 대기분 flush
 - 연결은 스레드끼리 나눠 쓰지 않는다: DB 연결은 워커마다 1개. Kafka Producer는 스레드 안전이라 공용
 - 웹 프레임워크 없음. 헬스체크는 배포 위치가 정해지면 추가
@@ -58,9 +58,8 @@ ai-server/
 │  ├ config.py          # Settings + 시작 시 검증
 │  ├ log.py             # JSON 한 줄 로그 (inference_id·record_card_id·stage)
 │  ├ messages.py        # 순수 함수: 요청 파싱, S3 키, 완료 메시지 조립(4가지)
-│  ├ notification.py    # SNS 알림 파싱 → dev 스모크 후 확정
-│  ├ ports.py           # Protocol: ObjectStore·AsyncInvoker·NotificationQueue·Publisher·InferenceRepository
-│  ├ adapters/          # kafka.py · s3.py · sagemaker.py · sqs.py · mysql.py
+│  ├ ports.py           # Protocol: ObjectStore·AsyncInvoker·Publisher·InferenceRepository
+│  ├ adapters/          # kafka.py · s3.py · sagemaker.py · mysql.py
 │  ├ request_flow.py    # 흐름 ①
 │  ├ completion_flow.py # 흐름 ②
 │  ├ workers.py         # 워커 루프 (요청: poll→처리→커밋 / 완료: 수신→처리)
@@ -135,8 +134,8 @@ CREATE TABLE inference_request (
 ### 3.2 상태 전이
 
 ```txt
-RECEIVED ──업로드──▶ UPLOADED ──호출 직전──▶ INVOKING ──202──▶ INVOKED ──알림(성공)──▶ SUCCEEDED
-   │                                            │                    └─알림(실패)──▶ FAILED (INFERENCE)
+RECEIVED ──업로드──▶ UPLOADED ──호출 직전──▶ INVOKING ──202──▶ INVOKED ──결과 파일──▶ SUCCEEDED
+   │                                            │                    └─실패 파일·응답 없음──▶ FAILED (INFERENCE)
    └─업로드 실패──▶ FAILED (INVOKE)              └─거부·응답 없음──▶ FAILED (INVOKE)
 발행 확인 시 published_at 기록 (SUCCEEDED·FAILED 공통)
 ```
@@ -174,7 +173,7 @@ RECEIVED ──업로드──▶ UPLOADED ──호출 직전──▶ INVOKING
 |---|---|
 | 없음 | 새 요청으로 처리 |
 | `RECEIVED`·`UPLOADED` (호출 전에 중단) | **같은 `inference_id`로** 업로드부터 이어서 처리 |
-| `INVOKING` (호출됐는지 모름) | **다시 호출하지 않고** 커밋. 알림 또는 무응답 점검(4.3)에 맡긴다 |
+| `INVOKING` (호출됐는지 모름) | **다시 호출하지 않고** 커밋. 완료 워커가 응답 없음(4.3)으로 마무리 |
 | `INVOKED`·`SUCCEEDED` | 호출하지 않고 커밋 |
 | `FAILED(INVOKE)`이고 `published_at` 없음 | 완료 메시지만 다시 발행 → 커밋 |
 | `FAILED`이고 `published_at` 있음 | 커밋 |
@@ -182,17 +181,21 @@ RECEIVED ──업로드──▶ UPLOADED ──호출 직전──▶ INVOKING
 - 사용자 재요청은 offset이 다르므로 새 요청으로 처리됨 (요청건대로 처리 원칙 유지)
 - 오토 커밋은 끄고 수동 커밋만 사용
 
-### 4.2 완료 (SQS → Kafka)
+### 4.2 완료 (S3 확인 → Kafka) — 2026-11-16 SNS·SQS 대신
 
 | 단계 | 처리 |
 |---|---|
-| 수신 | SQS long polling (20초) |
-| 파싱 | SNS 봉투 → SageMaker 알림 → `inferenceId`, 성공·실패, 결과 위치 |
-| 조회 | DB에서 `inference_id` 조회. `published_at`이 있으면 SQS 메시지만 삭제 |
-| 읽기 | 성공: `OutputLocation` / 실패: `FailureLocation` |
+| 조회 | `COMPLETION_POLL_SECONDS`(기본 10초)마다 **발행 전** 행 조회: `INVOKING`·`INVOKED`, 그리고 저장 후 발행 못 한 `SUCCEEDED`·`FAILED(INFERENCE)` (최대 100건, 오래된 호출부터) |
+| 확인 | `output_location` → 없으면 `failure_location`을 S3에서 읽기 (없으면 404 → 아직) |
+| 판정 | 결과 파일 → 성공 / 실패 파일 → 실패 / 둘 다 없음 → 기다림 / 제한 시간 넘음 → `INFERENCE_FAILED` (응답 없음) |
 | 조립 | Notion 4.1 형식으로 추출 (아래 표) |
 | 저장 | `result_json`·`status`·`error_code`·`error_message`·`completed_at` |
-| 발행 | 메시지 키 `record_card_id`. 발행 확인 → `published_at` → **SQS 메시지 삭제** |
+| 발행 | 메시지 키 `record_card_id`. 발행 확인 → `published_at` |
+
+- 제한 시간 = `INVOCATION_TIMEOUT_SECONDS` + `REQUEST_TTL_SECONDS` (기본 900 + 21600초). SageMaker가 요청을 포기하는 시점
+- 발행 실패 → `published_at`이 비어 있으니 다음 확인 때 다시 발행 (추론 재실행 아님)
+- 결과 파일 이름은 SageMaker UUID → 202 응답의 위치를 DB에 저장해 두고 그대로 읽는다
+- ⚠️ IAM에 `s3:ListBucket`(해당 prefix)이 없으면 없는 파일도 403 → "아직"을 구분 못 함
 
 **완료 메시지 `result` 조립 (Notion 4.1)**
 
@@ -206,20 +209,13 @@ RECEIVED ──업로드──▶ UPLOADED ──호출 직전──▶ INVOKING
 - 완료 메시지 최상위 필드: `inference_id`·`record_card_id`·`status`·`failed_stage`·`invoke`·`result`. **`user_id`는 넣지 않음**
 - 값은 바꾸거나 새로 계산하지 않는다 (`duration_seconds` 반올림 등 금지)
 
-- 발행에 실패하면 SQS 메시지를 지우지 않음 → 가시성 타임아웃 후 다시 수신. 추론을 다시 돌리는 게 아니라 알림 전달만 다시 하는 것
-- `maxReceiveCount`를 넘으면 DLQ로 이동
-- DB에 없는 `inferenceId`(다른 환경 등): 에러 로그 후 SQS 메시지 삭제
-
 ### 4.3 무응답 (계획 9장 ③)
 
 - 호출할 때 `InvocationTimeoutSeconds`·`RequestTTLSeconds`를 명시
-- 시간이 초과되면 SageMaker가 실패 알림을 보내는지 dev 검증 ④에서 확인
-  - 보냄 → 별도 로직 없음
-  - 안 보냄 → 주기 점검: `INVOKED`이고 `invoked_at` 기준을 넘긴 행 → `INFERENCE_FAILED` 발행
-- **`INVOKING`에 멈춘 행**(호출 전후에 서버 중단)은 알림이 와도 결과 위치를 DB에서 모른다
-  - SNS 알림에 결과 위치가 있으면 알림 값을 쓴다 → Phase 6에서 실제 메시지로 확인
-  - 없거나 알림이 안 오면 → 주기 점검 대상에 `INVOKING`도 포함해 `INFERENCE_FAILED` 발행
-  - 그 전까지 완료 흐름은 결과 위치가 없는 알림을 SQS에 남긴다 (`maxReceiveCount` 넘으면 DLQ)
+- 완료 워커가 **제한 시간까지 결과·실패 파일이 없으면** `INFERENCE_FAILED`(응답 없음) 발행 (2026-11-16)
+- **`INVOKING`에 멈춘 행**(호출 전후에 서버 중단)은 결과 위치를 모른다 → 제한 시간 후 같은 방식으로 발행
+- 시간 초과 시 SageMaker가 실패 파일을 남기는지는 dev 검증 ④에서 확인 (남기면 그 내용으로 발행)
+- 기준 시간(사용자에게 약속할 대기 시간)은 백엔드와 협의 (계획 9장 ③)
 
 ### 4.4 업데이트 최적화 (나중)
 
@@ -262,7 +258,7 @@ if prev is not None:
 |---|---|
 | `DB_HOST`·`DB_PORT`·`DB_NAME`·`DB_USER` | 환경별 DB |
 | `DB_PASSWORD` | **환경 변수로만** |
-| `SQS_QUEUE_URL` | SNS 구독 큐 |
+| `COMPLETION_POLL_SECONDS` | 결과 파일 확인 간격 (기본 10초, 1~300) |
 | `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` | 4.3 |
 
 - 기존 값(`KAFKA_ENV`·`AI_BUCKET_NAME`·`INPUT_PREFIX`·`ENDPOINT_NAME` 등)은 계획 문서 5장
@@ -297,12 +293,12 @@ if prev is not None:
 | 3. Kafka | Kafka 어댑터, 수동 커밋, `main` | **검증 ②** `KAFKA_ENV=dev`: 소비·발행, 재시작 후 재소비 | — | — |
 | 4. S3 + 호출 | S3·SageMaker 어댑터 | 없는 엔드포인트로 호출 거부 → `INVOKE` 발행 | IAM 권한 | — |
 | 4.5 DB 서버 | test 서버에 MySQL 컨테이너 | 연결·마이그레이션 적용 | — (기존 EC2) | — |
-| 5. 알림 인프라 | — | SNS 2개 + SQS + DLQ, 엔드포인트 Config 교체 | SNS·SQS·SageMaker | **시작** |
-| 6. 스모크 | 실제 알림·실패 파일 수집 → `notification.py` 확정 | 컨테이너 단독 스모크 → **검증 ③** | 엔드포인트 테스트 | 지속 |
+| ~~5. 알림 인프라~~ | 없음 (2026-11-16 S3 확인으로 대체) | — | — | — |
+| 6. 스모크 | `main` 조립, 실제 결과·실패 파일로 완료 발행 | 컨테이너 단독 스모크 → **검증 ③** | 엔드포인트 생성 | **시작·지속** |
 | 7. 실패 경로 | 타임아웃 파라미터, 4.3 결정 | **검증 ④** 400·거부·실패 파일·시간 초과 | 끝나면 엔드포인트 정리 | — |
 | 8. 통합 | Dockerfile, 문서 갱신 | 백엔드 통합 테스트 | 배포 위치 | — |
 
-- Phase 6 전에는 SNS 필드를 추측하지 않고 Fake 알림 형식으로만 작성
+- 완료 감지는 S3 파일 확인이라 SNS 알림 형식에 의존하지 않는다
 
 ---
 

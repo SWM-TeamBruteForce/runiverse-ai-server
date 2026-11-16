@@ -85,7 +85,7 @@ def test_read_other_error_raises(s3):
     c, stub = s3
     stub.add_client_error("get_object", service_error_code="AccessDenied", http_status_code=403)
 
-    with pytest.raises(ClientError):  # 완료 흐름 실패 → SQS 메시지가 남아 다시 처리
+    with pytest.raises(ClientError):  # 완료 흐름 실패 → 다음 확인 때 다시 처리
         S3ObjectStore(c, "bucket").read_text("s3://bucket/k")
 
 
