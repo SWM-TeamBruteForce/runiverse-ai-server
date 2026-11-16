@@ -1,4 +1,4 @@
-"""InferenceRepository 계약: Fake와 Postgres가 똑같이 동작해야 한다."""
+"""InferenceRepository 계약: Fake와 MySQL이 똑같이 동작해야 한다."""
 
 import json
 
@@ -13,16 +13,16 @@ OTHER = "44444444-4444-4444-8444-444444444444"
 BODY = json.dumps({"user_id": 1, "record_card_id": 101, "memo": "회고 원문"}, ensure_ascii=False).encode()
 
 
-@pytest.fixture(params=["fake", "postgres"])
+@pytest.fixture(params=["fake", "mysql"])
 def repo(request):
     if request.param == "fake":
         return FakeRepository()
-    from runiverse_ai_server.adapters.postgres import PostgresRepository
+    from runiverse_ai_server.adapters.mysql import MySQLRepository
     from runiverse_ai_server.migrate import apply_migrations
 
-    conn = request.getfixturevalue("pg_conn")
+    conn = request.getfixturevalue("db_conn")
     apply_migrations(conn, MIGRATIONS)
-    return PostgresRepository(conn)
+    return MySQLRepository(conn)
 
 
 def new_row(inference_id=IID, offset=7):
@@ -99,7 +99,7 @@ def test_completed_success(received):
 
     row = received.get(IID)
     assert (row.status, row.failed_stage, row.error_code) == ("SUCCEEDED", None, None)
-    assert json.loads(row.result_json) == json.loads(result)  # jsonb는 키 순서·공백을 정리한다
+    assert json.loads(row.result_json) == json.loads(result)  # JSON 컬럼은 키 순서·공백을 정리한다
 
 
 def test_completed_failure_without_json(received):

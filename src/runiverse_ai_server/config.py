@@ -17,9 +17,9 @@ class DbSettings(BaseSettings):
 
     model_config = SettingsConfigDict(case_sensitive=False, validate_default=True, frozen=True)
 
-    # AI DB (EC2 PostgreSQL, 환경별 DB 분리)
+    # AI DB (MySQL 8.4, 환경별 DB 분리)
     db_host: str = NonEmpty
-    db_port: int = Field(default=5432, ge=1, le=65535)
+    db_port: int = Field(default=3306, ge=1, le=65535)
     db_name: str = NonEmpty
     db_user: str = NonEmpty
     db_password: SecretStr

@@ -1,4 +1,8 @@
-"""migrations/NNN_*.sql을 번호 순서로 한 번씩만 적용한다. 파일 하나 = 트랜잭션 하나.
+"""migrations/NNN_*.sql을 번호 순서로 한 번씩만 적용한다 (MySQL).
+
+- 파일의 문장을 모두 실행한 뒤에만 schema_migrations에 기록한다
+- ⚠️ MySQL은 DDL을 되돌리지 못한다 → 중간에 실패하면 앞 문장은 남는다. 파일 하나에 DDL은 되도록 하나씩
+- 문장 구분은 줄 끝의 `;` (문자열 안에 `;`를 쓰지 않는다)
 
     DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runiverse_ai_server.migrate
 """
@@ -8,8 +12,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-
-import psycopg
+from typing import Any
 
 DEFAULT_DIR = Path("migrations")  # 실행 디렉터리 기준
 _NAME = re.compile(r"^(\d{3})_[a-z0-9_]+\.sql$")
@@ -24,28 +27,38 @@ def migration_files(directory: Path) -> list[Path]:
     return files
 
 
-def apply_migrations(conn: psycopg.Connection, directory: Path = DEFAULT_DIR) -> list[str]:
+def split_statements(sql: str) -> list[str]:
+    lines = [re.sub(r"\s*--.*$", "", line) for line in sql.splitlines()]
+    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+
+def apply_migrations(conn: Any, directory: Path = DEFAULT_DIR) -> list[str]:
     """새로 적용한 파일 이름 목록."""
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations ("
-                 "name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
-    done = {row[0] for row in conn.execute("SELECT name FROM schema_migrations")}
-    applied = []
-    for path in migration_files(directory):
-        if path.name in done:
-            continue
-        with conn.transaction():
-            conn.execute(path.read_text(encoding="utf-8"))
-            conn.execute("INSERT INTO schema_migrations (name) VALUES (%s)", [path.name])
-        applied.append(path.name)
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE IF NOT EXISTS schema_migrations ("
+                    "name VARCHAR(255) PRIMARY KEY, applied_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6))")
+        cur.execute("SELECT name FROM schema_migrations")
+        done = {row[0] for row in cur.fetchall()}
+        applied = []
+        for path in migration_files(directory):
+            if path.name in done:
+                continue
+            for statement in split_statements(path.read_text(encoding="utf-8")):
+                cur.execute(statement)
+            cur.execute("INSERT INTO schema_migrations (name) VALUES (%s)", [path.name])
+            applied.append(path.name)
     return applied
 
 
 def main() -> int:
-    from .adapters.postgres import connect
+    from .adapters.mysql import connect
     from .config import DbSettings, load_settings
 
-    with connect(load_settings(DbSettings)) as conn:
+    conn = connect(load_settings(DbSettings))
+    try:
         applied = apply_migrations(conn)
+    finally:
+        conn.close()
     print("적용: " + (", ".join(applied) if applied else "없음 (최신)"))
     return 0
 

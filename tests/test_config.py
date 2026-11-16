@@ -34,7 +34,7 @@ def test_loads_valid_environment(env):
 
     assert settings.kafka_env == "dev"
     assert settings.endpoint_name == "endpoint-test"
-    assert settings.db_port == 5432
+    assert settings.db_port == 3306  # MySQL 기본
     assert settings.aws_region == "ap-northeast-2"
 
 
@@ -120,7 +120,7 @@ def test_db_settings_load_without_kafka_or_aws(env):
 
     settings = load_settings(DbSettings)  # 마이그레이션은 DB 값만 있으면 된다
 
-    assert (settings.db_host, settings.db_port, settings.db_name) == ("localhost", 5432, "runiverse_ai_dev")
+    assert (settings.db_host, settings.db_port, settings.db_name) == ("localhost", 3306, "runiverse_ai_dev")
 
 
 def test_db_settings_require_password(env):
