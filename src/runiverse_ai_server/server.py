@@ -30,6 +30,11 @@ class Server:
         self._threads: list[threading.Thread] = []
 
     @property
+    def alive(self) -> bool:
+        """워커 스레드가 하나라도 아직 돌고 있다 (멈추는 중 포함)."""
+        return any(t.is_alive() for t in self._threads)
+
+    @property
     def running(self) -> bool:
         return any(t.is_alive() for t in self._threads) and not self._stop.is_set()
 

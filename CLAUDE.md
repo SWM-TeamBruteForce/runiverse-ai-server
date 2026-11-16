@@ -117,7 +117,8 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 ```
 
 - `TEST_DATABASE_URL`은 테이블을 지우고 다시 만든다 → **전용 테스트 DB만** 가리킨다
-- 서버 실행(`main`)은 조립 후 채운다
+- 서버 실행: 저장소 루트에서 `python -m runiverse_ai_server.main` (설정은 환경 변수로만). 종료 코드 0 정상 · 1 워커 오류(재시작하면 커밋 위치부터) · 2 설정 오류
+- ⚠️ 서버를 켜면 요청 토픽의 쌓인 메시지를 처리하고 **완료 토픽에 실제로 발행**한다. 먼저 `scripts/kafka_check.py`로 읽을 메시지 수를 확인한다
 
 ### AWS 작업 (Console)
 
