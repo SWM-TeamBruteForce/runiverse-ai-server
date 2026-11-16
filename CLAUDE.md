@@ -12,7 +12,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 | AI-SRV-01 | 요청 소비 | `{env}.record-card.music.requested` 소비. 본문 = 컨테이너 입력 JSON 그대로 |
 | AI-SRV-02 | 입력 업로드 | `inference_id`(UUID) 생성 → `async/inputs/{env}/{record_card_id}/{inference_id}.json` |
 | AI-SRV-03 | Async 호출 | `InvokeEndpointAsync(InputLocation, InferenceId=inference_id)` |
-| AI-SRV-04 | 완료 감지 | SageMaker SNS 성공·실패 알림 수신 (SQS 구독 권장) |
+| AI-SRV-04 | 완료 감지 | 202 응답의 `OutputLocation`·`FailureLocation`을 S3에서 주기적으로 확인 (SNS·SQS 안 씀, 2026-11-16) |
 | AI-SRV-05 | 결과 읽기 | 성공 `OutputLocation`, 실패 `FailureLocation`의 JSON 읽기 |
 | AI-SRV-06 | 완료 발행 | `{env}.record-card.music.generated`에 `status`·`failed_stage`·`invoke`·`result` 발행. `result`는 컨테이너 결과에서 **필요한 값만 추출** |
 | AI-SRV-07 | 연결 정보 보관 | `inference_id` ↔ `record_card_id`. AI 전용 DB(MySQL 8.4) `inference_request`에 입력·결과 원본과 함께 저장 |
@@ -20,13 +20,13 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - **카드 1건 = Kafka 메시지 1건 = Async 호출 1건**. 사진별로 쪼개지 않는다
 - **`generation_id`는 없다** (2026-11-13 백엔드 협의). 신규 요청과 재요청(업데이트)은 같은 형식이고 **구분하지 않고 요청건대로 처리**한다. 업데이트 여부는 백엔드가 `record_card_id`·사진 ID로 판단
 - 백엔드는 완료 메시지 하나만 읽는다. S3 `async/`를 읽지 않는다
-- **구현 현황** (2026-11-16): Phase 0~4 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버). 다음은 Phase 5 SNS·SQS. 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
+- **구현 현황** (2026-11-16): Phase 0~4 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버). 다음은 `main` 조립 → Phase 6 스모크 (Phase 5 SNS·SQS는 취소). 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
 
 ## 2. 처리 단계별 핵심사항
 
 > 메시지·JSON 형식의 정본은 Notion「AI 기능 아키텍처 및 data 입출력」3·4장. 아래는 요약이다.
 
-요청 1건 처리 순서: **소비 → `inference_id` 생성 → S3 업로드 → 호출 → (컨테이너 처리) → 알림 수신 → 결과 읽기 → 완료 발행**.
+요청 1건 처리 순서: **소비 → `inference_id` 생성 → S3 업로드 → 호출 → (컨테이너 처리) → 결과 파일 확인 → 완료 발행**.
 
 **① 요청 소비**
 - 본문은 컨테이너 입력 JSON: `user_id` `record_card_id` `memo` `activity_type` `running_summary` `photos[]`(`record_card_image_id` `image_key` `caption`)
@@ -39,14 +39,17 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - `inference_id`는 **AI 서버가 호출 전에 생성**한다 (S3 경로에 필요, SageMaker 자동 할당 값을 쓰지 않음)
 - 호출 거부(400·500·503) → 컨테이너 실행 없이 바로 실패 발행 (`failed_stage=INVOKE`, `result=null`)
 - SageMaker 응답 없음(S3 업로드 실패·네트워크 오류·시간 초과) → `invoke.http_status=null`로 같은 실패 발행
-- 202 → `inference_id`와 응답 헤더의 `OutputLocation`·`FailureLocation` 보관 후 알림 대기. 오프셋은 202 이후 커밋
+- 202 → `inference_id`와 응답 헤더의 `OutputLocation`·`FailureLocation` 보관 후 결과 파일 대기. 오프셋은 202 이후 커밋
 
 **③ 완료 감지·결과 읽기**
-- SNS 알림에는 `inferenceId`가 온다 → 보관한 연결 정보로 `record_card_id` 복원
+- 완료 워커가 `COMPLETION_POLL_SECONDS`(기본 10초)마다 **발행 전 행**을 조회해 `OutputLocation` → 없으면 `FailureLocation`을 S3에서 읽는다. 둘 다 없으면 다음에 다시
+- 제한 시간(`INVOCATION_TIMEOUT_SECONDS`+`REQUEST_TTL_SECONDS`)까지 둘 다 없으면 응답 없음 → `error.code=INFERENCE_FAILED`. `INVOKING`에 멈춘 행도 같다
+- 결과 파일 이름은 SageMaker UUID → 202 응답의 위치를 DB에 저장해 그대로 읽는다
+- ⚠️ 실행 주체에 결과 prefix `s3:ListBucket`이 없으면 없는 파일도 403 → "아직 없음"을 구분 못 한다
 - 성공 → `OutputLocation` JSON에서 `base_music`의 `s3_key`·`duration_seconds`, `photo_music[]`의 `record_card_image_id`·`s3_key`·`duration_seconds`만 추출
 - 실패 → `FailureLocation` JSON에서 `error.code`·`message`만 추출. JSON이 아니면 `error.code=INFERENCE_FAILED`, `message`=파일 내용 전체. 파일이 없으면 `error.code=INFERENCE_FAILED`
 - 컨테이너 결과 전체(AI 출력)와 Kafka 완료 메시지는 **형식이 다르다**. 나머지(`user_id`·`review_mood`·`photo_index`·`image_key`·`manifest` 등)는 S3에만 남는다
-- SNS 알림 필드·실패 파일 형식은 **dev 스모크에서 실제 메시지를 보고** 파싱 규칙을 정한다. 추측으로 만들지 않는다
+- 실패 파일 형식·시간 초과 시 실패 파일 여부는 **dev 스모크에서 실제 파일을 보고** 정한다. 추측으로 만들지 않는다
 
 **④ 완료 발행**
 
@@ -65,7 +68,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 **오류 원칙**
 - **자동 재시도하지 않는다.** 실패는 완료 메시지로 알리고, 사용자가 재요청하면 새 메시지로 들어온다
 - boto3 SageMaker 클라이언트의 기본 재시도를 끈다 (`max_attempts=1`)
-- SQS 알림 재수신(발행 실패 시 메시지를 지우지 않음)은 알림 전달 재시도라 허용한다. 추론을 다시 돌리지 않는다
+- 발행 실패 시 `published_at`이 비어 있어 다음 확인 때 다시 발행하는 것은 허용한다 (전달 재시도). 추론을 다시 돌리지 않는다
 - 결과 JSON은 정해진 필드만 추출한다. 값을 바꾸거나 새로 계산하지 않는다
 - 무응답 기준 시간·발행 주체는 미정 (SageMaker 기본: 처리 900초, 대기열 6시간)
 
@@ -100,7 +103,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - ⚠️ **`KAFKA_ENV`는 `dev`만** 쓴다 (2026-11-16. 설정도 `dev`만 허용). `test`는 테스트 서버와 메시지가 겹친다
 - 로컬에서 Kafka 접속: WSL + 배스천 SSH 터널 (`lo`에 `<DB_SERVER_IP>` 등록). 절차는 Notion「Kafka WSL 접속 방법 가이드」
 - `KAFKA_PASSWORD`·`DB_PASSWORD`는 **환경 변수로만** 받는다
-- 추가 설정: `DB_HOST`·`DB_PORT`(기본 3306)·`DB_NAME`·`DB_USER`, `SQS_QUEUE_URL`, `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` (값 미정)
+- 추가 설정: `DB_HOST`·`DB_PORT`(기본 3306)·`DB_NAME`·`DB_USER`, `COMPLETION_POLL_SECONDS`(기본 10), `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` (기본 900·21600)
 
 ## 4. 지침
 
@@ -114,13 +117,13 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 ```
 
 - `TEST_DATABASE_URL`은 테이블을 지우고 다시 만든다 → **전용 테스트 DB만** 가리킨다
-- 서버 실행(`main`)은 SQS 어댑터(Phase 5) 후에 채운다
+- 서버 실행(`main`)은 조립 후 채운다
 
 ### AWS 작업 (Console)
 
-- S3·IAM·SageMaker·SNS·SQS·CloudWatch 작업은 **개발자가 Console에서 직접** 한다. Claude가 AWS CLI·boto3·스크립트로 대신 실행하지 않는다 (서버 코드가 런타임에 하는 호출은 예외)
+- S3·IAM·SageMaker·EC2·CloudWatch 작업은 **개발자가 Console에서 직접** 한다. Claude가 AWS CLI·boto3·스크립트로 대신 실행하지 않는다 (서버 코드가 런타임에 하는 호출은 예외)
 - Claude는 **Console 단계별 안내**를 준다: 서비스 → 메뉴 경로 → 입력할 필드와 값 → 완료 확인 방법
-- 처음 쓰는 개념(SNS 구독, SQS 큐 정책, Async 알림 등)은 단계마다 1~2줄로 무엇인지와 왜 필요한지 붙인다
+- 처음 쓰는 개념(IAM 역할, 버킷 정책, Async 결과 위치 등)은 단계마다 1~2줄로 무엇인지와 왜 필요한지 붙인다
 - 리전은 항상 서울 `ap-northeast-2`인지 먼저 확인시킨다
 - 과금이 시작·지속되는 단계(엔드포인트 생성·유지)는 미리 알리고, 끝나면 삭제 방법도 함께 안내한다
 - 엔드포인트·컨테이너 설정의 정본은 `../ai/deploy/envs/*.yaml`
@@ -133,7 +136,7 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 |---|---|---|
 | ① 단위 테스트 | 로컬 | 메시지 파싱, S3 키, 완료 메시지 조립(④ 표 4가지) |
 | ② Kafka 연동 | 로컬 + `KAFKA_ENV=dev` | 소비·발행, 오프셋 커밋, 재시작 후 재소비 |
-| ③ AWS 연동 | dev 엔드포인트 (**과금**) | 업로드 → 호출 202 → 알림 → 결과 읽기 → 발행 |
+| ③ AWS 연동 | dev 엔드포인트 (**과금**) | 업로드 → 호출 202 → 결과 파일 확인 → 발행 |
 | ④ 실패 경로 | dev 엔드포인트 | 잘못된 입력(400), 호출 거부, 실패 파일 형식 |
 
 - ③ 전에 컨테이너 단독 스모크(`../ai`)를 먼저 통과시킨다
@@ -150,11 +153,11 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 ### Do
 
 - 구현 전에 전제를 말한다. 해석이 갈리면 선택지를 제시하고, 불분명하면 멈추고 묻는다
-- 외부 의존(Kafka·S3·SageMaker·SQS)은 Fake 구현과 함께 만든다
+- 외부 의존(Kafka·S3·SageMaker·DB)은 Fake 구현과 함께 만든다
 - 설정값은 시작 시 검증한다. 잘못된 값이면 **시작 시 실패**
 - 로그는 단계마다 JSON 한 줄. `inference_id`·`record_card_id`·`stage`를 키로 둔다
 - 문서는 개조식 핵심 위주. 서술형 문단 대신 불릿·표
-- 모르면 모른다고 한다. SageMaker·SNS 메시지에 없는 필드를 만들어내지 않는다
+- 모르면 모른다고 한다. SageMaker 응답·결과 파일에 없는 필드를 만들어내지 않는다
 
 ### Don't
 
