@@ -53,3 +53,25 @@ def test_long_failure_message_fits(db_conn):
     repo.mark_completed(IID, "FAILED", None, "INFERENCE_FAILED", message)
 
     assert repo.get(IID).error_message == message
+
+
+def test_reconnects_after_connection_lost(db_conn, db_connect):
+    apply_migrations(db_conn, MIGRATIONS)
+    repo = MySQLRepository(db_connect(), connect=db_connect)
+    repo.insert_received(new_row(), BODY)
+
+    repo.conn.close()  # 서버가 유휴 연결을 끊은 경우 (wait_timeout)
+
+    assert repo.get(IID).inference_id == IID
+    repo.conn.close()
+
+
+def test_without_connect_function_lost_connection_raises(db_conn):
+    import pymysql
+    import pytest
+
+    repo = make(db_conn)
+    db_conn.close()
+
+    with pytest.raises(pymysql.err.Error):
+        repo.get(IID)

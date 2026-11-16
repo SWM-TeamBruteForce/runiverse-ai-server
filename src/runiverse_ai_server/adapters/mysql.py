@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import pymysql
 
 from ..config import DbSettings
+from ..log import log_event
 from ..ports import DuplicateOffsetError, InferenceRecord, Invocation, InvokeError, UploadError
 
 _DUPLICATE_ENTRY = 1062
@@ -42,11 +43,27 @@ def _utc(value: datetime | None) -> datetime | None:
 
 
 class MySQLRepository:
-    def __init__(self, conn: Any):
+    def __init__(self, conn: Any, connect: Callable[[], Any] | None = None):
+        """connect: 연결이 끊겼을 때 새 연결을 만드는 함수 (없으면 다시 연결하지 않는다)."""
         self.conn = conn
+        self._connect = connect
+
+    def _cursor(self):
+        # 유휴 연결은 서버가 끊는다 (wait_timeout, 기본 8시간) → 쓰기 전에 확인하고 새로 연결
+        # (PyMySQL 1.2부터 ping(reconnect=True)는 폐기 예정이라 직접 새 연결을 만든다)
+        try:
+            if not self.conn.open:
+                raise pymysql.err.InterfaceError("연결이 닫혀 있음")
+            self.conn.ping(reconnect=False)
+        except pymysql.err.Error:
+            if self._connect is None:
+                raise
+            log_event("db", "reconnect", level="WARNING")
+            self.conn = self._connect()
+        return self.conn.cursor()
 
     def _execute(self, sql: str, params: list) -> Any:
-        with self.conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchone()
 
@@ -77,7 +94,7 @@ class MySQLRepository:
         return self._one("inference_id = %s", [inference_id])
 
     def list_pending(self, limit: int) -> list[InferenceRecord]:
-        with self.conn.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 f"SELECT {_COLUMNS} FROM inference_request WHERE published_at IS NULL AND ("
                 "status IN ('INVOKING', 'INVOKED', 'SUCCEEDED') OR (status = 'FAILED' AND failed_stage = 'INFERENCE')) "

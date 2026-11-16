@@ -14,7 +14,8 @@ MIGRATIONS = Path(__file__).parent.parent / "migrations"
 
 
 @pytest.fixture
-def db_conn():
+def db_connect():
+    """테스트 DB에 새 연결을 만드는 함수."""
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL 없음 → MySQL 테스트 건너뜀")
@@ -23,13 +24,19 @@ def db_conn():
     import pymysql
 
     parsed = urlparse(url)
-    conn = pymysql.connect(**connect_params(host=parsed.hostname, port=parsed.port or 3306,
-                                            user=unquote(parsed.username), password=unquote(parsed.password),
-                                            database=parsed.path.lstrip("/")))
+    params = connect_params(host=parsed.hostname, port=parsed.port or 3306, user=unquote(parsed.username),
+                            password=unquote(parsed.password), database=parsed.path.lstrip("/"))
+    return lambda: pymysql.connect(**params)
+
+
+@pytest.fixture
+def db_conn(db_connect):
+    conn = db_connect()
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS inference_request, schema_migrations, t_ok, t_bad")
     yield conn
-    conn.close()
+    if conn.open:  # 테스트가 이미 닫았을 수 있다
+        conn.close()
 
 
 def query(conn, sql, params=()):

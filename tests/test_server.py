@@ -109,3 +109,14 @@ def test_completion_error_keeps_server_running():
     assert server.running
     server.stop()
     assert server.wait(timeout=2) == 0
+
+
+def test_alive_until_threads_finish():
+    server, _ = make()
+    server.start()
+    assert server.alive
+
+    server.stop()
+    server.wait(timeout=2)
+
+    assert not server.alive
