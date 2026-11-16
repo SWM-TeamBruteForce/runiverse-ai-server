@@ -15,12 +15,12 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 | AI-SRV-04 | 완료 감지 | SageMaker SNS 성공·실패 알림 수신 (SQS 구독 권장) |
 | AI-SRV-05 | 결과 읽기 | 성공 `OutputLocation`, 실패 `FailureLocation`의 JSON 읽기 |
 | AI-SRV-06 | 완료 발행 | `{env}.record-card.music.generated`에 `status`·`failed_stage`·`invoke`·`result` 발행. `result`는 컨테이너 결과에서 **필요한 값만 추출** |
-| AI-SRV-07 | 연결 정보 보관 | `inference_id` ↔ `record_card_id`. AI 전용 DB(EC2 PostgreSQL) `inference_request`에 입력·결과 원본과 함께 저장 |
+| AI-SRV-07 | 연결 정보 보관 | `inference_id` ↔ `record_card_id`. AI 전용 DB(MySQL 8.4) `inference_request`에 입력·결과 원본과 함께 저장 |
 
 - **카드 1건 = Kafka 메시지 1건 = Async 호출 1건**. 사진별로 쪼개지 않는다
 - **`generation_id`는 없다** (2026-11-13 백엔드 협의). 신규 요청과 재요청(업데이트)은 같은 형식이고 **구분하지 않고 요청건대로 처리**한다. 업데이트 여부는 백엔드가 `record_card_id`·사진 ID로 판단
 - 백엔드는 완료 메시지 하나만 읽는다. S3 `async/`를 읽지 않는다
-- **구현 현황**: 저장소 생성 전. 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
+- **구현 현황** (2026-11-16): Phase 0~4 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버). 다음은 Phase 5 SNS·SQS. 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
 
 ## 2. 처리 단계별 핵심사항
 
@@ -71,40 +71,50 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 
 ## 3. 저장소 구조
 
-- 언어·라이브러리: **Python 3.11** · `confluent-kafka` · `boto3` · `pydantic-settings` · `psycopg` 3 · `pytest` (2026-11-13)
+- 언어·라이브러리: **Python 3.11** · `confluent-kafka` · `boto3` · `pydantic-settings` · `PyMySQL` · `pytest` (2026-11-13, DB 드라이버는 2026-11-16 `psycopg` → `PyMySQL`)
 - 실행: 단일 프로세스 + 워커 스레드 2개(요청·완료). 웹 프레임워크 없음
-- AI DB: EC2 PostgreSQL, 환경별 DB 분리 (`runiverse_ai_dev`·`_test`·`_prod`)
-- AI 서버 배포 위치: **미정**
+- AI DB: **MySQL 8.4** 컨테이너, 환경별 DB 분리 (`runiverse_ai_dev`·`_test`·`_prod`). 2026-11-16 PostgreSQL에서 전환
+- AI 서버 배포 위치: test는 백엔드 test 서버 EC2(`<DB_SERVER_EC2>`)에 AI 서버 + AI 전용 MySQL 컨테이너 (2026-11-16). 운영은 미정
 - 패키지 구조는 `docs/AI_서버_아키텍처_설계.md` 2장
 - 리전 서울 `ap-northeast-2`
 
 | 경로 | 내용 |
 |---|---|
 | `docs/` | 구현 계획 (`AI_서버_구현_계획.md`), 아키텍처 설계 (`AI_서버_아키텍처_설계.md`) |
-| `src/runiverse_ai_server/` | 서버 코드 (생성 예정) |
-| `migrations/` | DB 마이그레이션 SQL (`NNN_*.sql`, 생성 예정) |
-| `tests/` | 단위·흐름 테스트, Fake (생성 예정) |
-| `config/local/kafka-ca.crt` | Kafka CA 인증서 (실행 디렉터리 기준. 커밋 여부 확인) |
+| `src/runiverse_ai_server/` | 서버 코드 (`adapters/`: kafka·mysql·s3·sagemaker) |
+| `migrations/` | DB 마이그레이션 SQL (`NNN_*.sql`). MySQL은 DDL을 되돌리지 못함 → 파일 하나에 DDL은 되도록 하나씩 |
+| `tests/` | 단위·흐름 테스트, Fake (`fakes.py`), Fake·MySQL 공용 계약 테스트 |
+| `scripts/` | 점검 스크립트 (SageMaker 스모크, Kafka 점검·소비 확인, 호출 거부 확인) |
+| `config/local/kafka-ca.crt` | Kafka CA 인증서 (실행 디렉터리 기준, git 제외) |
 
 **환경 설정** (값은 설정으로 받고 잘못되면 시작 시 실패)
 
 | 값 | 로컬 | 테스트 | 운영 |
 |---|---|---|---|
-| `KAFKA_ENV` | `dev` | `test` | 미정 |
+| `KAFKA_ENV` | `dev` | 미정 (test 서버에서 쓸 값 백엔드와 협의) | 미정 |
 | `AI_BUCKET_NAME` | `<AI_BUCKET_TEST>` | `<AI_BUCKET_TEST>` | `<AI_BUCKET_PROD>` |
 | `INPUT_PREFIX` | `async/inputs/local` | `async/inputs/test` | `async/inputs/prod` |
 | `ENDPOINT_NAME` | `runiverse-music-test-v1` | `runiverse-music-test-v1` | 미정 |
 
 - Kafka: `<DB_SERVER_IP>:9092`, `SASL_SSL` + `SCRAM-SHA-512`, 사용자 `{env}.runiverse-ai`, 그룹 `{env}.runiverse-ai.record-card-music`
-- ⚠️ **개발에는 `KAFKA_ENV=dev`만** 쓴다. `test`는 테스트 서버와 메시지가 겹친다
+- ⚠️ **`KAFKA_ENV`는 `dev`만** 쓴다 (2026-11-16. 설정도 `dev`만 허용). `test`는 테스트 서버와 메시지가 겹친다
+- 로컬에서 Kafka 접속: WSL + 배스천 SSH 터널 (`lo`에 `<DB_SERVER_IP>` 등록). 절차는 Notion「Kafka WSL 접속 방법 가이드」
 - `KAFKA_PASSWORD`·`DB_PASSWORD`는 **환경 변수로만** 받는다
-- 추가 설정: `DB_HOST`·`DB_PORT`·`DB_NAME`·`DB_USER`, `SQS_QUEUE_URL`, `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` (값 미정)
+- 추가 설정: `DB_HOST`·`DB_PORT`(기본 3306)·`DB_NAME`·`DB_USER`, `SQS_QUEUE_URL`, `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` (값 미정)
 
 ## 4. 지침
 
 ### Commands
 
-- 기술 스택 확정 후 설치·테스트·실행 명령을 채운다
+```bash
+uv venv --python 3.11 .venv && uv pip install --python .venv -e ".[dev]"   # 설치 (WSL은 ~/.venvs/ai-server)
+PYTHONUTF8=1 .venv/Scripts/python -m pytest -q                              # 단위 테스트 (MySQL 테스트는 건너뜀)
+TEST_DATABASE_URL=mysql://runiverse_ai:<로컬 비밀번호>@127.0.0.1:53306/runiverse_ai_pytest   PYTHONUTF8=1 .venv/Scripts/python -m pytest -q                            # 로컬 Docker mysql:8.4 포함
+DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runiverse_ai_server.migrate   # 마이그레이션
+```
+
+- `TEST_DATABASE_URL`은 테이블을 지우고 다시 만든다 → **전용 테스트 DB만** 가리킨다
+- 서버 실행(`main`)은 SQS 어댑터(Phase 5) 후에 채운다
 
 ### AWS 작업 (Console)
 
