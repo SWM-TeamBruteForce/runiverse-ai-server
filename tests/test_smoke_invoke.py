@@ -97,3 +97,10 @@ def test_wait_times_out():
     with pytest.raises(TimeoutError):
         wait_for_result(s3, "s3://b/outputs/x", "s3://b/failures/x", timeout=60,
                         sleep=lambda _: None, clock=lambda: next(now))
+
+
+@pytest.mark.parametrize("name", ["no_photo", "with_photo"])
+def test_valid_samples_pass_request_parsing(name):
+    from runiverse_ai_server.messages import ParsedRequest, parse_request
+
+    assert isinstance(parse_request((SAMPLES_DIR / f"{name}.json").read_bytes()), ParsedRequest)
