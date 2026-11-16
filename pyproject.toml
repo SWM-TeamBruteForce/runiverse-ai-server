@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runiverse-ai-server"
+version = "0.1.0"
+description = "Runiverse AI 음악 생성 요청 중계 서버 (Kafka ↔ SageMaker Async)"
+requires-python = ">=3.11"
+dependencies = [
+    "confluent-kafka>=2.4",
+    "boto3>=1.34",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "scripts"]
+testpaths = ["tests"]
