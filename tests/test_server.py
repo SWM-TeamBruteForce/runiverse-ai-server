@@ -26,17 +26,6 @@ class Source:
         self.closed = True
 
 
-class Queue:
-    def __init__(self, batches=()):
-        self.batches = list(batches)
-
-    def receive(self, wait_seconds):
-        if self.batches:
-            return self.batches.pop(0)
-        time.sleep(0.01)
-        return []
-
-
 class Flow:
     def __init__(self, fail=False):
         self.handled = []
@@ -48,6 +37,25 @@ class Flow:
         if self.fail:
             raise RuntimeError("db down")
         self.handled.append(item)
+
+
+class CompletionFlow:
+    def __init__(self, rows=("n1",), fail=False):
+        self.rows = list(rows)
+        self.handled = []
+        self.fail = fail
+        self.seen = threading.Event()
+
+    def pending(self):
+        rows, self.rows = self.rows, []
+        return rows
+
+    def check(self, row):
+        self.seen.set()
+        if self.fail:
+            raise RuntimeError("publish failed")
+        self.handled.append(row)
+        return True
 
 
 class Publisher:
@@ -62,11 +70,11 @@ def rec(offset):
     return KafkaRecord(topic="t", partition=0, offset=offset, value=b"{}")
 
 
-def make(request_flow=None, completion_flow=None, records=(rec(0),), batches=(["n1"],)):
-    parts = {"source": Source(records), "request_flow": request_flow or Flow(), "queue": Queue(batches),
-             "completion_flow": completion_flow or Flow(), "publisher": Publisher()}
-    return Server(parts["source"], parts["request_flow"], parts["queue"], parts["completion_flow"],
-                  parts["publisher"], poll_timeout=0.01, wait_seconds=0), parts
+def make(request_flow=None, completion_flow=None, records=(rec(0),)):
+    parts = {"source": Source(records), "request_flow": request_flow or Flow(),
+             "completion_flow": completion_flow or CompletionFlow(), "publisher": Publisher()}
+    return Server(parts["source"], parts["request_flow"], parts["completion_flow"], parts["publisher"],
+                  poll_timeout=0.01, completion_interval=0.01), parts
 
 
 def test_runs_both_workers_until_stopped():
@@ -93,7 +101,7 @@ def test_request_worker_error_stops_server():
 
 
 def test_completion_error_keeps_server_running():
-    server, parts = make(completion_flow=Flow(fail=True))
+    server, parts = make(completion_flow=CompletionFlow(fail=True))
     server.start()
     parts["completion_flow"].seen.wait(2)
     time.sleep(0.05)

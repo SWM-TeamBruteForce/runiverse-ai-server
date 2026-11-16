@@ -1,5 +1,7 @@
 """워커 루프. server.py가 스레드로 돌린다.
 
+완료 워커: 발행 전 요청의 결과 파일을 주기적으로 확인 (CompletionFlow.pending → check).
+
 요청 워커: poll → RequestFlow.handle → commit. handle이 예외를 내면 커밋하지 않고 예외를 올린다
 → 프로세스가 멈추고, 재시작하면 마지막 커밋 위치부터 다시 받는다 (같은 offset 재수신은 DB로 처리).
 """
@@ -9,10 +11,10 @@ from __future__ import annotations
 from typing import Callable, Protocol
 
 from .log import log_event
-from .ports import KafkaRecord, Notification
+from .ports import InferenceRecord, KafkaRecord
 
 POLL_TIMEOUT_SECONDS = 1.0
-SQS_WAIT_SECONDS = 20  # long polling
+COMPLETION_POLL_SECONDS = 10  # 결과 파일 확인 간격
 
 
 class RequestSource(Protocol):
@@ -40,25 +42,28 @@ def consume_requests(source: RequestSource, flow: RequestHandler, *, should_stop
     return handled
 
 
-class NotificationSource(Protocol):
-    def receive(self, wait_seconds: int) -> list[Notification]: ...
+class CompletionChecker(Protocol):
+    def pending(self) -> list[InferenceRecord]: ...
+
+    def check(self, row: InferenceRecord) -> bool: ...
 
 
-class NotificationHandler(Protocol):
-    def handle(self, notification: Notification) -> None: ...
-
-
-def consume_notifications(queue: NotificationSource, flow: NotificationHandler, *,
-                          should_stop: Callable[[], bool], wait_seconds: int = SQS_WAIT_SECONDS) -> int:
-    """처리한 알림 수. 한 건이 실패해도 멈추지 않는다 (SQS 메시지를 지우지 않았으니 다시 온다 → 한도 넘으면 DLQ)."""
-    handled = 0
+def poll_completions(flow: CompletionChecker, *, should_stop: Callable[[], bool], wait: Callable[[float], object],
+                     interval: float = COMPLETION_POLL_SECONDS) -> int:
+    """확인 횟수(라운드). 한 건·한 라운드가 실패해도 멈추지 않는다 (published_at이 비어 있으니 다음 라운드에 다시)."""
+    rounds = 0
     while not should_stop():
-        for notification in queue.receive(wait_seconds):
+        try:
+            rows = flow.pending()
+        except Exception as exc:  # noqa: BLE001 — DB 일시 장애 등. 다음 라운드에 다시
+            log_event("completion", "pending_failed", level="ERROR", error_type=type(exc).__name__, error=str(exc))
+            rows = []
+        for row in rows:  # 한 라운드는 최대 PENDING_LIMIT건 → 끝까지 돌고 멈춤 여부를 본다
             try:
-                flow.handle(notification)
-            except Exception as exc:  # noqa: BLE001 — 알림 1건 실패로 워커를 멈추지 않는다
-                log_event("completion", "completion_failed", inference_id=getattr(notification, "inference_id", None),
+                flow.check(row)
+            except Exception as exc:  # noqa: BLE001 — 1건 실패로 워커를 멈추지 않는다
+                log_event("completion", "completion_failed", inference_id=getattr(row, "inference_id", None),
                           level="ERROR", error_type=type(exc).__name__, error=str(exc))
-                continue
-            handled += 1
-    return handled
+        rounds += 1
+        wait(interval)
+    return rounds

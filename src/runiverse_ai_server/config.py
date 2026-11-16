@@ -61,11 +61,18 @@ class Settings(DbSettings, KafkaSettings):
     ai_bucket_name: str = NonEmpty
     input_prefix: str = Field(pattern=r"^async/inputs/[^/]+$")  # 끝에 / 없음. 키는 {prefix}/{record_card_id}/...
     endpoint_name: str = NonEmpty
-    sqs_queue_url: str = Field(pattern=r"^https://sqs\.")
 
     # InvokeEndpointAsync 범위. 기본값은 SageMaker 기본값 (무응답 기준은 계획 9장 ③에서 확정)
     invocation_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     request_ttl_seconds: int = Field(default=21600, ge=60, le=21600)
+
+    # 완료 감지: 결과·실패 파일 확인 간격 (2026-11-16 SNS·SQS 대신 S3 확인)
+    completion_poll_seconds: int = Field(default=10, ge=1, le=300)
+
+    @property
+    def response_deadline_seconds(self) -> int:
+        """호출 후 이 시간까지 결과·실패 파일이 없으면 응답 없음 (SageMaker가 요청을 포기하는 시점)."""
+        return self.invocation_timeout_seconds + self.request_ttl_seconds
 
 
 S = TypeVar("S", bound=BaseSettings)

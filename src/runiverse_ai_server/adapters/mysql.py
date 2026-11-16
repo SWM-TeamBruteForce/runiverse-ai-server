@@ -20,7 +20,7 @@ _FIELDS = (
     "inference_id", "user_id", "record_card_id", "status", "endpoint_name", "input_s3_key",
     "kafka_topic", "kafka_partition", "kafka_offset", "failed_stage", "output_location", "failure_location",
     "invoke_http_status", "invoke_error_code", "invoke_message", "result_json", "error_code", "error_message",
-    "published_at",
+    "invoked_at", "published_at",
 )
 _COLUMNS = ", ".join(_FIELDS)
 
@@ -50,13 +50,16 @@ class MySQLRepository:
             cur.execute(sql, params)
             return cur.fetchone()
 
-    def _one(self, where: str, params: list) -> InferenceRecord | None:
-        row = self._execute(f"SELECT {_COLUMNS} FROM inference_request WHERE {where}", params)
-        if row is None:
-            return None
+    @staticmethod
+    def _record(row: tuple) -> InferenceRecord:
         values = dict(zip(_FIELDS, row))
+        values["invoked_at"] = _utc(values["invoked_at"])
         values["published_at"] = _utc(values["published_at"])
         return InferenceRecord(**values)
+
+    def _one(self, where: str, params: list) -> InferenceRecord | None:
+        row = self._execute(f"SELECT {_COLUMNS} FROM inference_request WHERE {where}", params)
+        return None if row is None else self._record(row)
 
     def _update(self, inference_id: str, assignments: str, params: list, condition: str = "") -> None:
         self._execute(f"UPDATE inference_request SET {assignments} WHERE inference_id = %s {condition}",
@@ -72,6 +75,14 @@ class MySQLRepository:
         except ValueError:  # 다른 시스템의 ID 등 → 없음
             return None
         return self._one("inference_id = %s", [inference_id])
+
+    def list_pending(self, limit: int) -> list[InferenceRecord]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLUMNS} FROM inference_request WHERE published_at IS NULL AND ("
+                "status IN ('INVOKING', 'INVOKED', 'SUCCEEDED') OR (status = 'FAILED' AND failed_stage = 'INFERENCE')) "
+                "ORDER BY invoked_at LIMIT %s", [limit])
+            return [self._record(row) for row in cur.fetchall()]
 
     def insert_received(self, record: InferenceRecord, input_json: bytes) -> None:
         try:

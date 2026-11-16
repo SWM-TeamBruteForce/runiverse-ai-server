@@ -24,15 +24,6 @@ class Invocation:
 
 
 @dataclass(frozen=True)
-class Notification:
-    """SageMaker 완료 알림. 필드는 dev 스모크에서 실제 SNS 메시지를 보고 notification.py에서 채운다."""
-
-    inference_id: str
-    succeeded: bool
-    handle: Any  # 삭제에 쓰는 큐 쪽 값 (SQS ReceiptHandle)
-
-
-@dataclass(frozen=True)
 class InferenceRecord:
     """inference_request 행 (input_json 제외)."""
 
@@ -54,6 +45,7 @@ class InferenceRecord:
     result_json: str | None = None  # 컨테이너 결과 파일 원문 (JSON일 때만)
     error_code: str | None = None
     error_message: str | None = None
+    invoked_at: datetime | None = None  # INVOKING 기록 시각 (UTC). 응답 없음 판단 기준
     published_at: datetime | None = None
 
 
@@ -102,17 +94,14 @@ class Publisher(Protocol):
         """브로커 저장 확인까지 기다린다. 실패하면 PublishError."""
 
 
-class NotificationQueue(Protocol):
-    def receive(self, wait_seconds: int) -> list[Notification]:
-        """long polling. 없으면 빈 목록."""
-
-    def delete(self, notification: Notification) -> None: ...
-
-
 class InferenceRepository(Protocol):
     def find_by_offset(self, topic: str, partition: int, offset: int) -> InferenceRecord | None: ...
 
     def get(self, inference_id: str) -> InferenceRecord | None: ...
+
+    def list_pending(self, limit: int) -> list[InferenceRecord]:
+        """완료 발행 전인 행: INVOKING·INVOKED, 그리고 완료 저장 후 발행 못 한 SUCCEEDED·FAILED(INFERENCE).
+        요청 흐름이 맡는 RECEIVED·UPLOADED·FAILED(INVOKE)는 제외. 오래된 호출부터."""
 
     def insert_received(self, record: InferenceRecord, input_json: bytes) -> None:
         """같은 offset이 있으면 DuplicateOffsetError."""

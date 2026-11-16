@@ -3,7 +3,7 @@
 import pytest
 
 from runiverse_ai_server.ports import KafkaRecord
-from runiverse_ai_server.workers import consume_notifications, consume_requests
+from runiverse_ai_server.workers import consume_requests, poll_completions
 
 
 def rec(offset):
@@ -69,41 +69,48 @@ def test_idle_polls_do_nothing():
     assert consume_requests(source, flow, should_stop=stop_after_polls(3)) == 0
 
 
-# ── 완료 워커 ──────────────────────────────────────────
-
-
-class FakeNotificationQueue:
-    def __init__(self, batches):
-        self.batches = list(batches)
-
-    def receive(self, wait_seconds):
-        return self.batches.pop(0) if self.batches else []
+# ── 완료 워커 (S3 주기 확인) ─────────────────────────────
 
 
 class FakeCompletionFlow:
-    def __init__(self, fail_on=()):
-        self.handled = []
+    def __init__(self, rows, fail_on=()):
+        self.rows = list(rows)
+        self.checked = []
         self.fail_on = fail_on
 
-    def handle(self, notification):
-        if notification in self.fail_on:
+    def pending(self):
+        return list(self.rows)
+
+    def check(self, row):
+        if row in self.fail_on:
             raise RuntimeError("publish failed")
-        self.handled.append(notification)
+        self.checked.append(row)
+        return True
 
 
-def test_completion_handles_every_notification():
-    flow = FakeCompletionFlow()
+def test_completion_checks_every_pending_row_each_round():
+    flow, waits = FakeCompletionFlow(["a", "b"]), []
 
-    handled = consume_notifications(FakeNotificationQueue([["a", "b"], [], ["c"]]), flow,
-                                    should_stop=stop_after_polls(3))
+    rounds = poll_completions(flow, should_stop=stop_after_polls(2), wait=waits.append, interval=10)
 
-    assert (handled, flow.handled) == (3, ["a", "b", "c"])
+    assert (rounds, flow.checked, waits) == (2, ["a", "b", "a", "b"], [10, 10])
 
 
-def test_completion_error_skips_only_that_notification(capsys):
-    flow = FakeCompletionFlow(fail_on={"a"})
+def test_completion_error_skips_only_that_row(capsys):
+    flow = FakeCompletionFlow(["a", "b"], fail_on={"a"})
 
-    handled = consume_notifications(FakeNotificationQueue([["a", "b"]]), flow, should_stop=stop_after_polls(1))
+    poll_completions(flow, should_stop=stop_after_polls(1), wait=lambda _: None, interval=10)
 
-    assert (handled, flow.handled) == (1, ["b"])  # a는 SQS에 남아 다시 온다
+    assert flow.checked == ["b"]  # a는 다음 확인 때 다시
     assert '"completion_failed"' in capsys.readouterr().out
+
+
+def test_completion_pending_error_does_not_stop_worker(capsys):
+    class BrokenFlow(FakeCompletionFlow):
+        def pending(self):
+            raise RuntimeError("db down")
+
+    rounds = poll_completions(BrokenFlow([]), should_stop=stop_after_polls(2), wait=lambda _: None, interval=10)
+
+    assert rounds == 2
+    assert '"pending_failed"' in capsys.readouterr().out

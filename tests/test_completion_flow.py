@@ -1,13 +1,14 @@
-"""흐름 ②: SQS 알림 → 결과/실패 파일 읽기 → 저장 → Kafka 발행 (설계 4.2)."""
+"""흐름 ②: 발행 전 요청의 S3 결과/실패 파일 확인 → 저장 → Kafka 발행 (설계 4.2, 2026-11-16 SQS 대신 S3 확인)."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeQueue, FakeRepository
+from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeRepository
 from runiverse_ai_server.completion_flow import CompletionFlow
 from runiverse_ai_server.messages import INFERENCE_FAILED
-from runiverse_ai_server.ports import KafkaRecord, Notification, PublishError
+from runiverse_ai_server.ports import KafkaRecord, PublishError
 from runiverse_ai_server.request_flow import RequestFlow
 
 IID = "22222222-2222-4222-8222-222222222222"
@@ -18,16 +19,30 @@ FAILURE = f"s3://bucket/async/failures/test/{IID}-error.out"
 SUCCESS_JSON = json.dumps({"user_id": 1, "record_card_id": 101, "status": "SUCCEEDED", "review_mood": None,
                            "base_music": {"s3_key": "audio/test/1/RACE/101/base.wav", "duration_seconds": 30.0},
                            "photo_music": [], "error": None, "manifest": {}})
+DEADLINE = 600
 
 
 @pytest.fixture
 def deps():
-    return {"store": FakeObjectStore(), "publisher": FakePublisher(), "repo": FakeRepository(), "queue": FakeQueue()}
+    return {"store": FakeObjectStore(), "publisher": FakePublisher(), "repo": FakeRepository()}
+
+
+class Clock:
+    def __init__(self):
+        self.now = datetime.now(timezone.utc)
+
+    def __call__(self):
+        return self.now
 
 
 @pytest.fixture
-def flow(deps):
-    return CompletionFlow(**deps)
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def flow(deps, clock):
+    return CompletionFlow(**deps, response_deadline_seconds=DEADLINE, clock=clock)
 
 
 @pytest.fixture
@@ -39,28 +54,39 @@ def invoked(deps):
     return deps["repo"].get(IID)
 
 
-def note(succeeded=True, inference_id=IID):
-    return Notification(inference_id=inference_id, succeeded=succeeded, handle="receipt-1")
+def check(flow, deps):
+    return flow.check(deps["repo"].get(IID))
 
 
-def test_success_publishes_extracted_result_then_deletes(flow, deps, invoked):
+def test_pending_lists_invoked_rows(flow, invoked):
+    assert [row.inference_id for row in flow.pending()] == [IID]
+
+
+def test_no_file_yet_waits(flow, deps, invoked):
+    assert check(flow, deps) is False
+
+    assert deps["publisher"].messages == []
+    assert deps["repo"].get(IID).status == "INVOKED"
+
+
+def test_output_file_publishes_extracted_result(flow, deps, invoked):
     deps["store"].objects[OUTPUT] = SUCCESS_JSON.encode()
 
-    flow.handle(note())
+    assert check(flow, deps) is True
 
     [msg] = deps["publisher"].messages
     assert (msg["inference_id"], msg["record_card_id"], msg["status"]) == (IID, 101, "SUCCEEDED")
     assert msg["result"]["base_music"]["duration_seconds"] == 30.0
     row = deps["repo"].get(IID)
     assert (row.status, row.result_json, row.published_at is not None) == ("SUCCEEDED", SUCCESS_JSON, True)
-    assert deps["queue"].deleted == [note()]
+    assert flow.pending() == []
 
 
-def test_container_failure_publishes_error(flow, deps, invoked):
+def test_failure_file_publishes_container_error(flow, deps, invoked):
     failure = json.dumps({"status": "FAILED", "error": {"code": "INVALID_REQUEST", "message": "모르는 필드"}})
     deps["store"].objects[FAILURE] = failure.encode()
 
-    flow.handle(note(succeeded=False))
+    check(flow, deps)
 
     [msg] = deps["publisher"].messages
     assert (msg["failed_stage"], msg["result"]["error"]["code"]) == ("INFERENCE", "INVALID_REQUEST")
@@ -72,79 +98,64 @@ def test_container_failure_publishes_error(flow, deps, invoked):
 def test_non_json_failure_file_stored_as_message(flow, deps, invoked):
     deps["store"].objects[FAILURE] = b"Received server error (500)"
 
-    flow.handle(note(succeeded=False))
+    check(flow, deps)
 
     row = deps["repo"].get(IID)
     assert (row.error_code, row.error_message, row.result_json) == \
-        (INFERENCE_FAILED, "Received server error (500)", None)  # jsonb에 못 넣는 내용은 error_message에만
+        (INFERENCE_FAILED, "Received server error (500)", None)  # JSON이 아닌 내용은 error_message에만
 
 
-def test_missing_failure_file(flow, deps, invoked):
-    flow.handle(note(succeeded=False))
+@pytest.mark.parametrize("output", [b"not json", b'{"photo_music": []}'])
+def test_unusable_output_publishes_inference_failed(flow, deps, invoked, output):
+    deps["store"].objects[OUTPUT] = output
 
-    [msg] = deps["publisher"].messages
-    assert msg["result"]["error"]["code"] == INFERENCE_FAILED
-
-
-@pytest.mark.parametrize("output", [None, b"not json", b'{"photo_music": []}'])
-def test_success_notification_with_unusable_output_publishes_inference_failed(flow, deps, invoked, output):
-    if output is not None:
-        deps["store"].objects[OUTPUT] = output
-
-    flow.handle(note())
+    check(flow, deps)
 
     [msg] = deps["publisher"].messages
     assert (msg["status"], msg["failed_stage"], msg["result"]["error"]["code"]) == \
         ("FAILED", "INFERENCE", INFERENCE_FAILED)
+
+
+def test_no_file_after_deadline_publishes_no_response(flow, deps, invoked, clock):
+    clock.now = deps["repo"].get(IID).invoked_at + timedelta(seconds=DEADLINE + 1)
+
+    assert check(flow, deps) is True
+
+    [msg] = deps["publisher"].messages
+    assert (msg["failed_stage"], msg["result"]["error"]["code"]) == ("INFERENCE", INFERENCE_FAILED)
+    assert "응답 없음" in msg["result"]["error"]["message"]
     assert deps["repo"].get(IID).status == "FAILED"
 
 
-def test_publish_failure_keeps_sqs_message(flow, deps, invoked):
+def test_invoking_without_location_waits_then_times_out(flow, deps, invoked, clock):
+    deps["repo"]._update(IID, status="INVOKING", output_location=None, failure_location=None)
+
+    assert check(flow, deps) is False  # 결과 위치를 모른다 → 제한 시간까지 기다린다
+
+    clock.now = deps["repo"].get(IID).invoked_at + timedelta(seconds=DEADLINE + 1)
+    assert check(flow, deps) is True
+    assert deps["publisher"].messages[0]["result"]["error"]["code"] == INFERENCE_FAILED
+
+
+def test_publish_failure_raises_and_retries_next_check(flow, deps, invoked):
     deps["store"].objects[OUTPUT] = SUCCESS_JSON.encode()
     deps["publisher"].fail = True
-
     with pytest.raises(PublishError):
-        flow.handle(note())
-
-    assert deps["queue"].deleted == []
+        check(flow, deps)
     assert deps["repo"].get(IID).published_at is None
+    assert [row.inference_id for row in flow.pending()] == [IID]  # 다음 확인 때 다시
 
-
-def test_redelivered_notification_after_publish_only_deletes(flow, deps, invoked):
-    deps["store"].objects[OUTPUT] = SUCCESS_JSON.encode()
-    flow.handle(note())
-    deps["publisher"].messages.clear()
-
-    flow.handle(note())
-
-    assert deps["publisher"].messages == []
-    assert deps["queue"].deleted == [note(), note()]
-
-
-def test_redelivered_notification_after_failed_publish_republishes(flow, deps, invoked):
-    deps["store"].objects[OUTPUT] = SUCCESS_JSON.encode()
-    deps["publisher"].fail = True
-    with pytest.raises(PublishError):
-        flow.handle(note())
     deps["publisher"].fail = False
-
-    flow.handle(note())
+    check(flow, deps)
 
     assert len(deps["publisher"].messages) == 1
-    assert deps["repo"].get(IID).published_at is not None
+    assert flow.pending() == []
 
 
-def test_unknown_inference_id_is_deleted(flow, deps):
-    flow.handle(note(inference_id="unknown"))
+def test_already_published_does_nothing(flow, deps, invoked):
+    deps["store"].objects[OUTPUT] = SUCCESS_JSON.encode()
+    check(flow, deps)
+    deps["publisher"].messages.clear()
 
+    assert check(flow, deps) is False
     assert deps["publisher"].messages == []
-    assert deps["queue"].deleted == [note(inference_id="unknown")]
-
-
-def test_notification_before_invoke_recorded_is_left_in_queue(flow, deps, invoked):
-    deps["repo"]._update(IID, status="UPLOADED", output_location=None, failure_location=None)
-
-    flow.handle(note())  # 결과 위치를 아직 모른다 → 가시성 타임아웃 후 다시 받는다
-
-    assert deps["publisher"].messages == []
-    assert deps["queue"].deleted == []
