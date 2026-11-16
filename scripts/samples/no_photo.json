@@ -1,0 +1,17 @@
+{
+  "user_id": 0,
+  "record_card_id": 900001,
+  "memo": "스모크 테스트용 회고입니다. 끝까지 달려서 뿌듯했다.",
+  "activity_type": "DAILY",
+  "running_summary": {
+    "total_distance": 5000,
+    "total_duration": 1800,
+    "avg_pace": 360,
+    "avg_cadence": 168,
+    "start_at": "2026-11-14T06:30:00+09:00",
+    "weather_code": 0,
+    "temperature": 12.0,
+    "total_elevation_gain": 10.0
+  },
+  "photos": []
+}
