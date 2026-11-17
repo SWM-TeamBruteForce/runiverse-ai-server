@@ -28,8 +28,8 @@ class InferenceRecord:
     """inference_request 행 (input_json 제외)."""
 
     inference_id: str
-    user_id: int
-    record_card_id: int
+    user_id: str  # 백엔드 UUID 문자열
+    record_card_id: str
     status: str  # RECEIVED·UPLOADED·INVOKING·INVOKED·SUCCEEDED·FAILED
     endpoint_name: str
     input_s3_key: str

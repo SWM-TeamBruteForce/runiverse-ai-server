@@ -6,13 +6,14 @@ import json
 import pytest
 
 from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeRepository
+from test_messages import CARD, USER
 from runiverse_ai_server.messages import INVALID_MESSAGE
 from runiverse_ai_server.ports import InvokeError, KafkaRecord, PublishError, UploadError
 from runiverse_ai_server.request_flow import RequestFlow
 
 TOPIC = "dev.record-card.music.requested"
 IID = "11111111-1111-4111-8111-111111111111"
-BODY = json.dumps({"user_id": 1, "record_card_id": 101, "memo": "회고 원문", "activity_type": "RACE",
+BODY = json.dumps({"user_id": USER, "record_card_id": CARD, "memo": "회고 원문", "activity_type": "RACE",
                    "running_summary": {}, "photos": []}, ensure_ascii=False).encode("utf-8")
 
 
@@ -34,23 +35,23 @@ def record(value=BODY, offset=7):
 def test_success_uploads_raw_body_and_invokes(flow, deps):
     flow.handle(record())
 
-    key = f"async/inputs/local/101/{IID}.json"
+    key = f"async/inputs/local/{CARD}/{IID}.json"
     assert deps["store"].objects == {f"s3://bucket/{key}": BODY}
     assert deps["invoker"].calls == [(f"s3://bucket/{key}", IID)]
     row = deps["repo"].get(IID)
     assert (row.status, row.input_s3_key, row.invoke_http_status) == ("INVOKED", key, 202)
     assert row.output_location.endswith(f"{IID}.out")
-    assert (row.user_id, row.record_card_id, row.endpoint_name) == (1, 101, "ep")
+    assert (row.user_id, row.record_card_id, row.endpoint_name) == (USER, CARD, "ep")
     assert (row.kafka_topic, row.kafka_partition, row.kafka_offset) == (TOPIC, 0, 7)
     assert deps["repo"].input_json[IID] == BODY
     assert deps["publisher"].messages == []  # 202는 완료가 아니다
 
 
 def test_invalid_message_publishes_failure_without_db_or_invoke(flow, deps):
-    flow.handle(record(b'{"record_card_id": 101}'))
+    flow.handle(record(json.dumps({"record_card_id": CARD}).encode()))
 
     [msg] = deps["publisher"].messages
-    assert (msg["inference_id"], msg["record_card_id"], msg["invoke"]["error_code"]) == (None, 101, INVALID_MESSAGE)
+    assert (msg["inference_id"], msg["record_card_id"], msg["invoke"]["error_code"]) == (None, CARD, INVALID_MESSAGE)
     assert deps["repo"].rows == {}
     assert deps["invoker"].calls == []
 
@@ -119,7 +120,7 @@ def test_redelivery_before_invoke_resumes_with_same_id(flow, deps, status):
 
     flow.handle(record())
 
-    assert deps["invoker"].calls == [(f"s3://bucket/async/inputs/local/101/{IID}.json", IID)]
+    assert deps["invoker"].calls == [(f"s3://bucket/async/inputs/local/{CARD}/{IID}.json", IID)]
     assert len(deps["repo"].rows) == 1
     assert deps["repo"].get(IID).status == "INVOKED"
 

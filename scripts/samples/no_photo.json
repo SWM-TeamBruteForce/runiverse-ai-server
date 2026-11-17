@@ -1,6 +1,6 @@
 {
-  "user_id": 1,
-  "record_card_id": 900001,
+  "user_id": "00000000-0000-4000-8000-000000000001",
+  "record_card_id": "00000000-0000-4000-8000-000000900001",
   "memo": "스모크 테스트용 회고입니다. 끝까지 달려서 뿌듯했다.",
   "activity_type": "DAILY",
   "running_summary": {

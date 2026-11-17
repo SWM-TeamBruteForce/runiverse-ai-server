@@ -11,7 +11,7 @@ CONTAINER_KEYS = {"user_id", "record_card_id", "memo", "activity_type", "running
 
 
 def test_input_key_follows_s3_layout():
-    assert input_key("async/inputs/local", 101, "abc") == "async/inputs/local/101/abc.json"
+    assert input_key("async/inputs/local", "c-1", "abc") == "async/inputs/local/c-1/abc.json"
 
 
 def test_parse_s3_uri():
@@ -27,7 +27,15 @@ def test_load_sample_returns_raw_bytes_and_card_id():
     body, record_card_id = load_sample("no_photo")
 
     assert body == (SAMPLES_DIR / "no_photo.json").read_bytes()  # 수정 없이 그대로 올린다
-    assert record_card_id == 900001
+    assert record_card_id == "00000000-0000-4000-8000-000000900001"  # 백엔드처럼 UUID 문자열
+
+
+def test_load_sample_rejects_integer_card_id(tmp_path, monkeypatch):
+    (tmp_path / "old.json").write_text('{"user_id": "00000000-0000-4000-8000-000000000001", "record_card_id": 101}')
+    monkeypatch.setattr("smoke_invoke.SAMPLES_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="record_card_id"):
+        load_sample("old")
 
 
 def test_load_sample_rejects_missing_card_id(tmp_path, monkeypatch):

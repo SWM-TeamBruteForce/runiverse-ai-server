@@ -1,6 +1,6 @@
 {
-  "user_id": 1,
-  "record_card_id": 101,
+  "user_id": "00000000-0000-4000-8000-000000000001",
+  "record_card_id": "00000000-0000-4000-8000-000000900002",
   "memo": "힘들었지만 끝까지 달려서 뿌듯했다",
   "activity_type": "RACE",
   "running_summary": {
@@ -15,17 +15,17 @@
   },
   "photos": [
     {
-      "record_card_image_id": 900201,
+      "record_card_image_id": "00000000-0000-4000-8000-000000900201",
       "image_key": "record-cards/0001/photos/001.png",
       "caption": "동료들과 함께 달린 기록"
     },
     {
-      "record_card_image_id": 900202,
+      "record_card_image_id": "00000000-0000-4000-8000-000000900202",
       "image_key": "record-cards/0001/photos/002.png",
       "caption": "완주한 순간!"
     },
     {
-      "record_card_image_id": 900203,
+      "record_card_image_id": "00000000-0000-4000-8000-000000900203",
       "image_key": "record-cards/0001/photos/003.png",
       "caption": "대회 끝나고 친구와 브런치!"
     }

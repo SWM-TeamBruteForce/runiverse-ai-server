@@ -87,8 +87,8 @@ ai-server/
 -- 시각은 UTC (연결 시 time_zone = '+00:00')
 CREATE TABLE inference_request (
   inference_id        CHAR(36)      NOT NULL,       -- AI 서버가 호출 전에 발급 (UUID 문자열)
-  user_id             BIGINT        NOT NULL,
-  record_card_id      BIGINT        NOT NULL,
+  user_id             CHAR(36)      NOT NULL,       -- 백엔드 UUID 문자열 (2026-11-17, 002_uuid_ids.sql)
+  record_card_id      CHAR(36)      NOT NULL,
   status              VARCHAR(16)   NOT NULL,
   failed_stage        VARCHAR(16)   NULL,
   endpoint_name       VARCHAR(255)  NOT NULL,

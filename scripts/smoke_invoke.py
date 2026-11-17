@@ -23,7 +23,7 @@ from pathlib import Path
 SAMPLES_DIR = Path(__file__).parent / "samples"
 
 
-def input_key(input_prefix: str, record_card_id: int, inference_id: str) -> str:
+def input_key(input_prefix: str, record_card_id: str, inference_id: str) -> str:
     return f"{input_prefix}/{record_card_id}/{inference_id}.json"
 
 
@@ -34,13 +34,15 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-def load_sample(name: str) -> tuple[bytes, int]:
-    """샘플 원본 바이트(수정 없이 업로드)와 S3 경로용 record_card_id."""
+def load_sample(name: str) -> tuple[bytes, str]:
+    """샘플 원본 바이트(수정 없이 업로드)와 S3 경로용 record_card_id (서버와 같은 기준: UUID 문자열)."""
+    from runiverse_ai_server.messages import InvalidMessage, parse_request
+
     body = (SAMPLES_DIR / f"{name}.json").read_bytes()
-    record_card_id = json.loads(body).get("record_card_id")
-    if not isinstance(record_card_id, int):
-        raise ValueError(f"{name}.json에 정수 record_card_id가 없습니다")
-    return body, record_card_id
+    parsed = parse_request(body)
+    if isinstance(parsed, InvalidMessage) and parsed.record_card_id is None:
+        raise ValueError(f"{name}.json: {parsed.reason}")
+    return body, parsed.record_card_id
 
 
 def _exists(s3, uri: str) -> bool:

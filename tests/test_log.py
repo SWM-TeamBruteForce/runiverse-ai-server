@@ -2,6 +2,7 @@
 
 import json
 
+from test_messages import CARD, USER
 from runiverse_ai_server.log import log_event
 
 
@@ -10,13 +11,13 @@ def _lines(capsys) -> list[dict]:
 
 
 def test_writes_one_json_line_with_keys(capsys):
-    log_event("upload", "succeeded", inference_id="abc", record_card_id=101, seconds=0.12)
+    log_event("upload", "succeeded", inference_id="abc", record_card_id=CARD, seconds=0.12)
 
     (line,) = _lines(capsys)
     assert line["stage"] == "upload"
     assert line["event"] == "succeeded"
     assert line["inference_id"] == "abc"
-    assert line["record_card_id"] == 101
+    assert line["record_card_id"] == CARD
     assert line["seconds"] == 0.12
     assert line["level"] == "INFO"
     assert "ts" in line
