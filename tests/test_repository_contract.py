@@ -6,11 +6,12 @@ import pytest
 
 from conftest import MIGRATIONS
 from fakes import FakeRepository
+from test_messages import CARD, USER
 from runiverse_ai_server.ports import DuplicateOffsetError, InferenceRecord, Invocation, InvokeError, UploadError
 
 IID = "33333333-3333-4333-8333-333333333333"
 OTHER = "44444444-4444-4444-8444-444444444444"
-BODY = json.dumps({"user_id": 1, "record_card_id": 101, "memo": "회고 원문"}, ensure_ascii=False).encode()
+BODY = json.dumps({"user_id": USER, "record_card_id": CARD, "memo": "회고 원문"}, ensure_ascii=False).encode()
 
 
 @pytest.fixture(params=["fake", "mysql"])
@@ -26,8 +27,8 @@ def repo(request):
 
 
 def new_row(inference_id=IID, offset=7):
-    return InferenceRecord(inference_id=inference_id, user_id=1, record_card_id=101, status="RECEIVED",
-                           endpoint_name="ep", input_s3_key=f"async/inputs/local/101/{inference_id}.json",
+    return InferenceRecord(inference_id=inference_id, user_id=USER, record_card_id=CARD, status="RECEIVED",
+                           endpoint_name="ep", input_s3_key=f"async/inputs/local/{CARD}/{inference_id}.json",
                            kafka_topic="dev.record-card.music.requested", kafka_partition=0, kafka_offset=offset)
 
 

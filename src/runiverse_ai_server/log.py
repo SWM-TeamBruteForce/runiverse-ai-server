@@ -11,7 +11,7 @@ def log_event(
     event: str,
     *,
     inference_id: str | None = None,
-    record_card_id: int | None = None,
+    record_card_id: str | None = None,
     level: str = "INFO",
     **fields: Any,
 ) -> None:

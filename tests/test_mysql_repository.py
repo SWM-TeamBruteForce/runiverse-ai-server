@@ -75,3 +75,16 @@ def test_without_connect_function_lost_connection_raises(db_conn):
 
     with pytest.raises(pymysql.err.Error):
         repo.get(IID)
+
+
+def test_uuid_ids_stored_as_sent(db_conn):
+    import dataclasses
+
+    from test_messages import CARD, USER
+
+    repo = make(db_conn)
+    row = dataclasses.replace(new_row(), user_id=USER.upper(), record_card_id=CARD.upper())
+    repo.insert_received(row, BODY)
+
+    stored = repo.get(IID)
+    assert (stored.user_id, stored.record_card_id) == (USER.upper(), CARD.upper())  # 대소문자 그대로 돌려준다

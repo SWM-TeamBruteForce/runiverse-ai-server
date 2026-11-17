@@ -6,17 +6,18 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeRepository
+from test_messages import CARD, USER
 from runiverse_ai_server.completion_flow import CompletionFlow
 from runiverse_ai_server.messages import INFERENCE_FAILED
 from runiverse_ai_server.ports import KafkaRecord, PublishError
 from runiverse_ai_server.request_flow import RequestFlow
 
 IID = "22222222-2222-4222-8222-222222222222"
-BODY = json.dumps({"user_id": 1, "record_card_id": 101, "memo": None, "activity_type": "RACE",
+BODY = json.dumps({"user_id": USER, "record_card_id": CARD, "memo": None, "activity_type": "RACE",
                    "running_summary": {}, "photos": []}).encode()
 OUTPUT = f"s3://bucket/async/outputs/test/{IID}.out"
 FAILURE = f"s3://bucket/async/failures/test/{IID}-error.out"
-SUCCESS_JSON = json.dumps({"user_id": 1, "record_card_id": 101, "status": "SUCCEEDED", "review_mood": None,
+SUCCESS_JSON = json.dumps({"user_id": USER, "record_card_id": CARD, "status": "SUCCEEDED", "review_mood": None,
                            "base_music": {"s3_key": "audio/test/1/RACE/101/base.wav", "duration_seconds": 30.0},
                            "photo_music": [], "error": None, "manifest": {}})
 DEADLINE = 600
@@ -75,7 +76,7 @@ def test_output_file_publishes_extracted_result(flow, deps, invoked):
     assert check(flow, deps) is True
 
     [msg] = deps["publisher"].messages
-    assert (msg["inference_id"], msg["record_card_id"], msg["status"]) == (IID, 101, "SUCCEEDED")
+    assert (msg["inference_id"], msg["record_card_id"], msg["status"]) == (IID, CARD, "SUCCEEDED")
     assert msg["result"]["base_music"]["duration_seconds"] == 30.0
     row = deps["repo"].get(IID)
     assert (row.status, row.result_json, row.published_at is not None) == ("SUCCEEDED", SUCCESS_JSON, True)

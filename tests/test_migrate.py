@@ -28,7 +28,7 @@ def test_split_statements_ignores_comments_and_blank():
 
 
 def test_applies_once(db_conn):
-    assert apply_migrations(db_conn, MIGRATIONS) == ["001_init.sql"]
+    assert apply_migrations(db_conn, MIGRATIONS) == ["001_init.sql", "002_uuid_ids.sql"]
     assert apply_migrations(db_conn, MIGRATIONS) == []
 
     columns = {r[0] for r in query(db_conn, "SELECT column_name FROM information_schema.columns "

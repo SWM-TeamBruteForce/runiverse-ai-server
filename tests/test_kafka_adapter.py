@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from test_messages import CARD, USER
 from runiverse_ai_server.adapters.kafka import (
     KafkaPublisher,
     KafkaRequestSource,
@@ -65,12 +66,12 @@ class FakeProducer:
 
 def test_publish_sends_json_with_card_key():
     producer = FakeProducer()
-    message = {"inference_id": "x", "record_card_id": 101, "status": "FAILED", "invoke": {"message": "한글"}}
+    message = {"inference_id": "x", "record_card_id": CARD, "status": "FAILED", "invoke": {"message": "한글"}}
 
     KafkaPublisher(producer, "dev.record-card.music.generated").publish(message)
 
     [(topic, key, value)] = producer.produced
-    assert (topic, key) == ("dev.record-card.music.generated", b"101")
+    assert (topic, key) == ("dev.record-card.music.generated", CARD.encode())
     assert json.loads(value.decode("utf-8")) == message
     assert "한글".encode() in value  # \uXXXX로 바꾸지 않는다
 
@@ -85,12 +86,12 @@ def test_publish_without_card_id_has_no_key():
 
 def test_publish_delivery_error_raises():
     with pytest.raises(PublishError):
-        KafkaPublisher(FakeProducer(error="broker down"), "t").publish({"record_card_id": 1})
+        KafkaPublisher(FakeProducer(error="broker down"), "t").publish({"record_card_id": CARD})
 
 
 def test_publish_timeout_raises():
     with pytest.raises(PublishError, match="확인"):
-        KafkaPublisher(FakeProducer(remaining=1), "t").publish({"record_card_id": 1})
+        KafkaPublisher(FakeProducer(remaining=1), "t").publish({"record_card_id": CARD})
 
 
 # ── 소비·커밋 ──────────────────────────────────────────
@@ -114,7 +115,7 @@ class FakeMessage:
         return self._offset
 
     def value(self):
-        return b'{"user_id": 1}'
+        return b'{"user_id": USER}'
 
 
 class FakeConsumer:
@@ -141,7 +142,7 @@ def test_source_subscribes_and_returns_record():
 
     assert consumer.subscribed == ["dev.record-card.music.requested"]
     assert record == KafkaRecord(topic="dev.record-card.music.requested", partition=2, offset=5,
-                                 value=b'{"user_id": 1}')
+                                 value=b'{"user_id": USER}')
 
 
 def test_source_returns_none_when_idle():

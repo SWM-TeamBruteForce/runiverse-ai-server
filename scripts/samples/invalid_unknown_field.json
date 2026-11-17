@@ -1,6 +1,6 @@
 {
-  "user_id": 0,
-  "record_card_id": 900003,
+  "user_id": "00000000-0000-4000-8000-000000000001",
+  "record_card_id": "00000000-0000-4000-8000-000000900003",
   "memo": null,
   "activity_type": "DAILY",
   "running_summary": {
