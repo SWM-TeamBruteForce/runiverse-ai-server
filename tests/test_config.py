@@ -61,12 +61,23 @@ def test_fails_when_required_value_missing(env, missing):
         load_settings()
 
 
-@pytest.mark.parametrize("value", ["test", "prod"])  # dev만 사용 (2026-11-16)
-def test_accepts_only_dev_kafka_env(env, value):
+@pytest.mark.parametrize("value", ["prod", "local", ""])  # dev·test만 사용 (2026-11-17)
+def test_rejects_kafka_env_other_than_dev_or_test(env, value):
     env.setenv("KAFKA_ENV", value)
 
     with pytest.raises(ConfigError, match="kafka_env"):
         load_settings()
+
+
+def test_test_kafka_env_uses_test_account_group_and_topics(env):
+    env.setenv("KAFKA_ENV", "test")  # 백엔드 요청 이벤트가 test 토픽으로 나간다 (2026-11-17 백엔드 공유)
+
+    settings = load_settings()
+
+    assert settings.kafka_username == "test.runiverse-ai"
+    assert settings.kafka_group_id == "test.runiverse-ai.record-card-music"
+    assert settings.request_topic == "test.record-card.music.requested"
+    assert settings.completion_topic == "test.record-card.music.generated"
 
 
 @pytest.mark.parametrize("prefix", ["async/outputs/local", "async/inputs/local/", "/async/inputs/local"])
