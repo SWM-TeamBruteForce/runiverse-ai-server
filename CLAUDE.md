@@ -158,7 +158,7 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 - 커밋: `<type>: <설명>` — **type 앞에 이모지가 붙는다.** `📍 Feat` `🔨 Fix` `📝 Docs` `🎨 Style` `🤖 Refactor` `✅ Test` `🚚 Chore` `✂️ Remove` `🔧 Rename`
 - 브랜치: `<type>/<domain>` 소문자 kebab-case
 - 원격: `upstream` = 팀 저장소 `github.com/SWM-TeamBruteForce/runiverse-ai-server`, `origin` = 개인 포크 `github.com/jihwanjo-98/runiverse-ai-server`. **둘 다 공개**
-- 작업 흐름: 포크(`origin`)에 브랜치 push → 팀 저장소 `dev`로 PR
+- 작업 흐름: 포크(`origin`)에 브랜치 push → 팀 저장소 `dev`로 PR (`--head jihwanjo-98:<브랜치>`). **팀 원격(`upstream`)에는 `main`·`dev`만** 둔다 (기능 브랜치 push 금지)
 - 브랜치 역할: `main` 운영 · `dev` 개발 통합. 작업은 기능 브랜치 → PR → `dev`. **PR base는 `dev`** (`main`으로 직접 PR·push 하지 않음)
 - push·PR 생성은 요청받았을 때만 한다. 병합은 개발자가 한다
 - **push·PR 전 보안 점검 필수**: 저장소 공개 여부 확인 → 올라갈 커밋 범위에서 비밀값·인프라 값(IP·버킷·ARN·계정 ID·EC2·역할 이름) 검색 → 원격 브랜치·PR 상태 확인. 문제가 있으면 push하지 않는다
