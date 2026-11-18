@@ -10,3 +10,9 @@ config/local/
 
 # SSH 키 (배스천 등)
 *.pem
+
+# 로컬 작업 자료 (사진 등 개인정보 포함 가능)
+dump/
+
+# 서버 실제 설정 (예시 파일 server.env.example만 추적)
+deploy/*/server.env
