@@ -20,7 +20,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - **카드 1건 = Kafka 메시지 1건 = Async 호출 1건**. 사진별로 쪼개지 않는다
 - **`generation_id`는 없다** (2026-11-13 백엔드 협의). 신규 요청과 재요청(업데이트)은 같은 형식이고 **구분하지 않고 요청건대로 처리**한다. 업데이트 여부는 백엔드가 `record_card_id`·사진 ID로 판단
 - 백엔드는 완료 메시지 하나만 읽는다. S3 `async/`를 읽지 않는다
-- **구현 현황** (2026-11-18): Phase 0~7 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버·`main`, 백엔드 test 토픽으로 성공 스모크, 실패 경로 검증). 다음은 Phase 8 test 서버 배포 (Phase 5 SNS·SQS는 취소). 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
+- **구현 현황** (2026-11-18): Phase 0~8 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버·`main`, 실패 경로 검증, test EC2 배포 후 백엔드 요청으로 성공·실패 발행 확인). 다음은 사진 버킷 수정 후 재확인, 운영 배포(CI/CD) (Phase 5 SNS·SQS는 취소). 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
 
 ## 2. 처리 단계별 핵심사항
 
@@ -79,7 +79,10 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - 언어·라이브러리: **Python 3.11** · `confluent-kafka` · `boto3` · `pydantic-settings` · `PyMySQL` · `pytest` (2026-11-13, DB 드라이버는 2026-11-16 `psycopg` → `PyMySQL`)
 - 실행: 단일 프로세스 + 워커 스레드 2개(요청·완료). 웹 프레임워크 없음
 - AI DB: **MySQL 8.4** 컨테이너, 환경별 DB 분리 (`runiverse_ai_dev`·`_test`·`_prod`). 2026-11-16 PostgreSQL에서 전환
-- AI 서버 배포 위치: test는 백엔드 test 서버 EC2(`<DB_SERVER_EC2>`)에 AI 서버 + AI 전용 MySQL 컨테이너 (2026-11-16). 운영은 미정
+- AI 서버 배포 위치 (2026-11-18): **AI 서버 전용 EC2**에 Docker 컨테이너. test는 `<AI_SERVER_EC2>`(<AI_SERVER_IP>, 임시), 운영은 CI/CD 구성 때 운영 EC2를 새로 만든다
+- AI DB 위치: test는 백엔드 test 서버 EC2(`<DB_SERVER_EC2>`, <DB_SERVER_IP>)의 AI 전용 MySQL 컨테이너, 포트 3307. 운영은 미정
+- AWS 자격 증명: EC2 인스턴스 역할 (test `<AI_SERVER_TEST_ROLE>`). 액세스 키를 쓰지 않는다
+- 접속: 배스천 경유 SSH (`~/.ssh/config`의 `runiverse-ai-test`). 구축 절차는 Notion「AI 서버 AWS Console 구축 가이드」
 - 패키지 구조는 `docs/AI_서버_아키텍처_설계.md` 2장
 - 리전 서울 `ap-northeast-2`
 
@@ -89,7 +92,9 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 | `src/runiverse_ai_server/` | 서버 코드 (`adapters/`: kafka·mysql·s3·sagemaker) |
 | `migrations/` | DB 마이그레이션 SQL (`NNN_*.sql`). MySQL은 DDL을 되돌리지 못함 → 파일 하나에 DDL은 되도록 하나씩 |
 | `tests/` | 단위·흐름 테스트, Fake (`fakes.py`), Fake·MySQL 공용 계약 테스트 |
-| `scripts/` | 점검 스크립트 (SageMaker 스모크, Kafka 점검·소비 확인, 호출 거부 확인) |
+| `scripts/` | 점검 스크립트 (SageMaker 스모크, Kafka 점검·소비 확인·메시지 구조 확인, 호출 거부 확인) |
+| `Dockerfile` · `docker/` | AI 서버 이미지 (비root, `KAFKA_PASSWORD_FILE`·`DB_PASSWORD_FILE`로 비밀번호를 파일에서 읽음) |
+| `deploy/test/` | test 배포 스크립트(`deploy.sh`), 설정 예시(`server.env.example`. 실제 `server.env`는 git 제외) |
 | `config/local/kafka-ca.crt` | Kafka CA 인증서 (실행 디렉터리 기준, git 제외) |
 
 **환경 설정** (값은 설정으로 받고 잘못되면 시작 시 실패)
@@ -121,6 +126,8 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 
 - `TEST_DATABASE_URL`은 테이블을 지우고 다시 만든다 → **전용 테스트 DB만** 가리킨다
 - 서버 실행: 저장소 루트에서 `python -m runiverse_ai_server.main` (설정은 환경 변수로만). 종료 코드 0 정상 · 1 워커 오류(재시작하면 커밋 위치부터) · 2 설정 오류
+- test 배포 (WSL, 저장소 루트): `bash deploy/test/deploy.sh build` → `check` → `migrate` → `run`, 로그는 `status`. **커밋된 코드만** 배포되고, `check`·`migrate`·`run`은 서버의 마지막 빌드 이미지를 쓴다
+- `*.sh`는 LF로 저장한다 (CRLF면 서버에서 `set: pipefail: invalid option name`)
 - ⚠️ 서버를 켜면 요청 토픽의 쌓인 메시지를 처리하고 **완료 토픽에 실제로 발행**한다. 먼저 `scripts/kafka_check.py`로 읽을 메시지 수를 확인한다
 
 ### AWS 작업 (Console)
@@ -150,7 +157,9 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 
 - 커밋: `<type>: <설명>` — **type 앞에 이모지가 붙는다.** `📍 Feat` `🔨 Fix` `📝 Docs` `🎨 Style` `🤖 Refactor` `✅ Test` `🚚 Chore` `✂️ Remove` `🔧 Rename`
 - 브랜치: `<type>/<domain>` 소문자 kebab-case
-- 원격·PR base: 저장소 생성 후 채운다
+- 원격: `origin` = `github.com/SWM-TeamBruteForce/runiverse-ai-server` (비공개)
+- 브랜치 역할: `main` 운영 · `dev` 개발 통합. 작업은 기능 브랜치 → PR → `dev`. **PR base는 `dev`** (`main`으로 직접 PR·push 하지 않음)
+- push·PR 생성은 요청받았을 때만 한다. 병합은 개발자가 한다
 - 한 커밋에 논리적 변경 하나. 각 커밋에서 테스트가 통과하는지 본다
 - **AI를 공동 작성자로 넣지 않는다.** `Co-Authored-By: Claude` 트레일러, `🤖 Generated with` 푸터 모두 금지
 
@@ -189,4 +198,4 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 
 **저장소 밖**: 음악 생성 컨테이너는 `../ai`, 앱 전체 기획은 `../Docs/`, 앱 코드는 `../frontend/`.
 
-**미확정 정책**(무응답 타임아웃, AI 서버 배포 위치·자격 증명, 운영 값, 메시지 버전 필드)은 계획 문서 9장에 있다. 가정값으로 구현할 때는 그 사실을 PR에 적는다.
+**미확정 정책**(무응답 타임아웃, 운영 배포 위치, 운영 값, 메시지 버전 필드)은 계획 문서 9장에 있다. 가정값으로 구현할 때는 그 사실을 PR에 적는다.
