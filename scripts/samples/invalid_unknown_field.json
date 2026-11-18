@@ -1,0 +1,12 @@
+{
+  "user_id": "00000000-0000-4000-8000-000000000001",
+  "record_card_id": "00000000-0000-4000-8000-000000900003",
+  "memo": null,
+  "activity_type": "DAILY",
+  "running_summary": {
+    "avg_pace": 360,
+    "weather_code": 0
+  },
+  "photos": [],
+  "generation_id": 1
+}
