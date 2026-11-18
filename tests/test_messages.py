@@ -190,6 +190,30 @@ def test_inference_failed_unreadable_file_uses_whole_content(body):
     assert inference_failed(IID, CARD, body) == _failed_inference(INFERENCE_FAILED, body)
 
 
+# dev 엔드포인트에서 받은 실제 실패 파일 (2026-11-18 검증 ④). 버킷 이름만 바꿈
+REAL_INVALID_REQUEST_FILE = json.dumps({
+    "user_id": USER, "record_card_id": CARD, "status": "FAILED",
+    "error": {"code": "INVALID_REQUEST", "message": "요청 형식이 잘못되었습니다.",
+              "detail": [{"loc": ["generation_id"], "msg": "Extra inputs are not permitted"}]},
+}, ensure_ascii=False, indent=2)
+REAL_TIMEOUT_FILE = ("Timed out uploading object (bucket: bucket-test, "
+                     "key: async/failures/test/433545b9-53b3-4ca4-8c45-dbc646c8d008-error.out).")
+
+
+def test_real_container_400_file_is_container_json_as_is():
+    # SageMaker가 감싸지 않고 컨테이너 응답 본문을 그대로 남긴다
+    msg = inference_failed(IID, CARD, REAL_INVALID_REQUEST_FILE)
+
+    assert msg == _failed_inference("INVALID_REQUEST", "요청 형식이 잘못되었습니다.")
+
+
+def test_real_invocation_timeout_file_is_plain_text():
+    # InvocationTimeoutSeconds 초과 시 SageMaker가 JSON이 아닌 문장 한 줄을 남긴다
+    msg = inference_failed(IID, CARD, REAL_TIMEOUT_FILE)
+
+    assert msg == _failed_inference(INFERENCE_FAILED, REAL_TIMEOUT_FILE)
+
+
 def test_unusable_output_is_inference_failed():
     msg = unusable_output(IID, CARD, "성공 결과가 JSON이 아닙니다")
 
