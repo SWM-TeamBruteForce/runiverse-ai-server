@@ -20,7 +20,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - **카드 1건 = Kafka 메시지 1건 = Async 호출 1건**. 사진별로 쪼개지 않는다
 - **`generation_id`는 없다** (2026-11-13 백엔드 협의). 신규 요청과 재요청(업데이트)은 같은 형식이고 **구분하지 않고 요청건대로 처리**한다. 업데이트 여부는 백엔드가 `record_card_id`·사진 ID로 판단
 - 백엔드는 완료 메시지 하나만 읽는다. S3 `async/`를 읽지 않는다
-- **구현 현황** (2026-11-16): Phase 0~4 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버). 다음은 `main` 조립 → Phase 6 스모크 (Phase 5 SNS·SQS는 취소). 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
+- **구현 현황** (2026-11-18): Phase 0~7 완료 (흐름·Fake·MySQL·Kafka·S3·SageMaker 어댑터·워커/서버·`main`, 백엔드 test 토픽으로 성공 스모크, 실패 경로 검증). 다음은 Phase 8 test 서버 배포 (Phase 5 SNS·SQS는 취소). 계획은 `docs/AI_서버_구현_계획.md`, 구조·DB·작업 순서는 `docs/AI_서버_아키텍처_설계.md`
 
 ## 2. 처리 단계별 핵심사항
 
@@ -31,7 +31,8 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 **① 요청 소비**
 - 본문은 컨테이너 입력 JSON: `user_id` `record_card_id` `memo` `activity_type` `running_summary` `photos[]`(`record_card_image_id` `image_key` `caption`)
 - **수정 없이 S3에 올린다.** 컨테이너는 모르는 필드를 400으로 거부한다 (`running_summary`만 예외)
-- 입력 검증은 컨테이너 몫. AI 서버는 JSON 파싱과 `user_id`·`record_card_id` 존재만 본다
+- 입력 검증은 컨테이너 몫. AI 서버는 JSON 파싱과 `user_id`·`record_card_id`만 본다
+- 백엔드 ID(`user_id`·`record_card_id`·`photos[].record_card_image_id`)는 **UUID 문자열** (2026-11-17). UUID 모양(8-4-4-4-12 16진수)만 받고, 받은 값 그대로 저장·발행 (대소문자 변환 없음). DB는 `CHAR(36)`
 - 파싱 실패·ID 누락 → 호출 없이 실패 발행 (`failed_stage=INVOKE`, `invoke.http_status=null`, `invoke.error_code=INVALID_MESSAGE`, `inference_id=null`). `record_card_id`는 본문에서 읽히면 담고 아니면 `null`
 - Kafka는 같은 메시지를 두 번 줄 수 있다. **같은 메시지 재수신만** DB의 `(topic, partition, offset)`으로 감지해 호출을 건너뛴다. 재요청은 offset이 달라 요청건대로 처리한다 (요청 ID가 없어 내용으로 중복을 판별하지 않음)
 
@@ -49,7 +50,8 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - 성공 → `OutputLocation` JSON에서 `base_music`의 `s3_key`·`duration_seconds`, `photo_music[]`의 `record_card_image_id`·`s3_key`·`duration_seconds`만 추출
 - 실패 → `FailureLocation` JSON에서 `error.code`·`message`만 추출. JSON이 아니면 `error.code=INFERENCE_FAILED`, `message`=파일 내용 전체. 파일이 없으면 `error.code=INFERENCE_FAILED`
 - 컨테이너 결과 전체(AI 출력)와 Kafka 완료 메시지는 **형식이 다르다**. 나머지(`user_id`·`review_mood`·`photo_index`·`image_key`·`manifest` 등)는 S3에만 남는다
-- 실패 파일 형식·시간 초과 시 실패 파일 여부는 **dev 스모크에서 실제 파일을 보고** 정한다. 추측으로 만들지 않는다
+- 실패 파일 (2026-11-18 dev 확인): 컨테이너 오류는 **컨테이너 JSON 그대로** (SageMaker가 감싸지 않음). `InvocationTimeoutSeconds` 초과는 **JSON이 아닌 한 줄** (`Timed out uploading object (bucket: …, key: …)`) → `INFERENCE_FAILED`, `message`=그 문장. 실제 파일은 `tests/test_messages.py`에 고정
+- 시간 초과에도 실패 파일이 남으므로 "응답 없음" 판정은 결과·실패 파일이 모두 없을 때만 쓰인다
 
 **④ 완료 발행**
 
@@ -94,13 +96,14 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 
 | 값 | 로컬 | 테스트 | 운영 |
 |---|---|---|---|
-| `KAFKA_ENV` | `dev` | 미정 (test 서버에서 쓸 값 백엔드와 협의) | 미정 |
+| `KAFKA_ENV` | `dev` (백엔드 연동 확인 시 `test`) | `test` | 미정 |
 | `AI_BUCKET_NAME` | `s3-runiverse-ai-music-test` | `s3-runiverse-ai-music-test` | `s3-runiverse-ai-music-prod` |
 | `INPUT_PREFIX` | `async/inputs/local` | `async/inputs/test` | `async/inputs/prod` |
 | `ENDPOINT_NAME` | `runiverse-music-test-v1` | `runiverse-music-test-v1` | 미정 |
 
 - Kafka: `12.16.16.198:9092`, `SASL_SSL` + `SCRAM-SHA-512`, 사용자 `{env}.runiverse-ai`, 그룹 `{env}.runiverse-ai.record-card-music`
-- ⚠️ **`KAFKA_ENV`는 `dev`만** 쓴다 (2026-11-16. 설정도 `dev`만 허용). `test`는 테스트 서버와 메시지가 겹친다
+- `KAFKA_ENV`는 `dev`·`test`만 허용 (2026-11-17). 백엔드 요청 이벤트는 **test 토픽**으로 나온다 (dev 계정은 test 권한 없음)
+- ⚠️ test 서버에 AI 서버가 떠 있으면 로컬에서 `KAFKA_ENV=test`로 **서버를 켜지 않는다** (같은 그룹이라 요청이 나뉘고 완료가 두 번 나갈 수 있음). 점검 스크립트(`kafka_check`·`kafka_shape_check`)는 커밋하지 않아 괜찮다
 - 로컬에서 Kafka 접속: WSL + 배스천 SSH 터널 (`lo`에 `12.16.16.198` 등록). 절차는 Notion「Kafka WSL 접속 방법 가이드」
 - `KAFKA_PASSWORD`·`DB_PASSWORD`는 **환경 변수로만** 받는다
 - 추가 설정: `DB_HOST`·`DB_PORT`(기본 3306)·`DB_NAME`·`DB_USER`, `COMPLETION_POLL_SECONDS`(기본 10), `INVOCATION_TIMEOUT_SECONDS`·`REQUEST_TTL_SECONDS` (기본 900·21600)
@@ -169,7 +172,7 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 - 자동 재시도
 - **회고 원문·사진 캡션·입력 JSON 본문을 로그·로컬 파일에 남기기** (개인정보). 원본 보관은 AI DB `inference_request.input_json`에만 한다
 - `KAFKA_PASSWORD`·`DB_PASSWORD`·AWS 키·ARN·버킷 이름을 코드에 하드코딩, 시크릿 커밋
-- `KAFKA_ENV=test`로 개발
+- test 서버 AI 서버가 실행 중일 때 로컬에서 `KAFKA_ENV=test`로 서버 실행
 - AWS CLI·boto3·스크립트로 AWS 리소스를 생성·변경·삭제 — Console 안내로 대신한다
 - 검증하지 않은 코드를 "완성"이라고 보고
 
