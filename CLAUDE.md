@@ -181,6 +181,7 @@ DB_HOST=... DB_PORT=... DB_NAME=... DB_USER=... DB_PASSWORD=... python -m runive
 - 자동 재시도
 - **회고 원문·사진 캡션·입력 JSON 본문을 로그·로컬 파일에 남기기** (개인정보). 원본 보관은 AI DB `inference_request.input_json`에만 한다
 - `KAFKA_PASSWORD`·`DB_PASSWORD`·AWS 키·ARN·버킷 이름을 코드에 하드코딩, 시크릿 커밋
+- **공개 저장소다.** 내부 IP·버킷 이름·EC2·IAM 역할 이름·계정 ID를 커밋하지 않는다. 문서·예시에는 `<DB_SERVER_IP>` 같은 자리 표시를 쓰고, 실제 값은 `CLAUDE.local.md`(git 제외)에만 둔다
 - test 서버 AI 서버가 실행 중일 때 로컬에서 `KAFKA_ENV=test`로 서버 실행
 - AWS CLI·boto3·스크립트로 AWS 리소스를 생성·변경·삭제 — Console 안내로 대신한다
 - 검증하지 않은 코드를 "완성"이라고 보고
