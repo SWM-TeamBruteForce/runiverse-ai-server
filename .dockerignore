@@ -8,3 +8,5 @@ config/local
 .env
 tests
 docs
+**/*.egg-info
+deploy
