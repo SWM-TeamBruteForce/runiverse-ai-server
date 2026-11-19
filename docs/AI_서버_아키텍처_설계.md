@@ -244,11 +244,13 @@ if prev is not None:
 |---|---|---|
 | S3 업로드 실패 (호출 전) | `failed_stage=INVOKE`, `invoke.http_status=null`, 원인은 `invoke.error_code`·`message` | ✅ 결정 (2026-11-14, Notion 반영) |
 | HTTP 응답이 없는 호출 실패 (네트워크 등) | `failed_stage=INVOKE`, `invoke.http_status=null`, 원인은 `invoke.error_code`·`message` | ✅ 결정 (2026-11-14, Notion 반영) |
-| 요청 메시지 오류 (JSON 아님, `user_id`·`record_card_id` 없음) | 호출하지 않고 **완료 토픽에 실패 발행**: `failed_stage=INVOKE`, `invoke.http_status=null`, `invoke.error_code=INVALID_MESSAGE`, `inference_id=null`, `result=null`. `record_card_id`는 본문에서 읽을 수 있으면 담고, 없으면 `null` (Kafka 키는 쓰지 않음). `message`에 본문 원문 금지. DB에 기록하지 않음 | ✅ 결정 (2026-11-14, Notion 반영) |
+| 요청 메시지 오류 (JSON 아님, `user_id`·`record_card_id` 없음) | 호출하지 않고 **완료 토픽에 실패 발행**: `failed_stage=INVOKE`, `invoke.http_status=null`, `invoke.error_code=INVALID_MESSAGE`, `inference_id`=uuid5(topic·partition·offset) (2026-11-19, 같은 메시지 재수신 시 같은 값), `result`=실패 양식. `record_card_id`는 본문에서 읽을 수 있으면 담고, 없으면 `null` (Kafka 키는 쓰지 않음). `message`에 본문 원문 금지. DB에 기록하지 않음 | ✅ 결정 (2026-11-14, Notion 반영) |
 | 완료 메시지 파티션 키 | 메시지 키 = `str(record_card_id)`. 같은 카드의 완료 메시지는 **AI가 발행한 순서대로** 전달됨 (사용자 요청 순서와는 다를 수 있음) | ✅ 결정 (2026-11-13) |
 
 - 위 결정은 모두 Notion「AI 기능 아키텍처 및 data 입출력」3장·4.1·4.3에 반영함 (2026-11-14)
 - `record_card_id`가 `null`인 완료 메시지는 Kafka 키 없이 발행
+- 모든 완료 메시지에 Kafka 헤더 `inference_id` (본문 값과 같음, 2026-11-19 백엔드 중복 처리 요청)
+- 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 DB `input_json.photos` 순서
 
 ---
 
