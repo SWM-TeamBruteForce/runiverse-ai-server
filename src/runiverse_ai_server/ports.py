@@ -99,6 +99,9 @@ class InferenceRepository(Protocol):
 
     def get(self, inference_id: str) -> InferenceRecord | None: ...
 
+    def get_input_json(self, inference_id: str) -> str | None:
+        """저장한 요청 본문. 없으면 None."""
+
     def list_pending(self, limit: int) -> list[InferenceRecord]:
         """완료 발행 전인 행: INVOKING·INVOKED, 그리고 완료 저장 후 발행 못 한 SUCCEEDED·FAILED(INFERENCE).
         요청 흐름이 맡는 RECEIVED·UPLOADED·FAILED(INVOKE)는 제외. 오래된 호출부터."""

@@ -47,6 +47,10 @@ class CompletionFlow:
     def pending(self) -> list[InferenceRecord]:
         return self.repo.list_pending(limit=PENDING_LIMIT)
 
+    def _photo_ids(self, row: InferenceRecord) -> list:
+        """실패 메시지에 넣을 요청의 사진 ID (DB input_json에서)."""
+        return messages.photo_image_ids(self.repo.get_input_json(row.inference_id))
+
     def check(self, row: InferenceRecord) -> bool:
         """발행했으면 True, 아직 결과가 없으면 False."""
         if row.published_at is not None:
@@ -64,17 +68,20 @@ class CompletionFlow:
                 message = messages.succeeded(row.inference_id, row.record_card_id, output)
             except messages.ResultFormatError as exc:
                 log_event(STAGE, "unusable_output", level="ERROR", reason=str(exc), **ids)
-                message = messages.unusable_output(row.inference_id, row.record_card_id, str(exc))
+                message = messages.unusable_output(row.inference_id, row.record_card_id, str(exc),
+                                                   photo_ids=self._photo_ids(row))
         elif failure is not None:
             body = failure
-            message = messages.inference_failed(row.inference_id, row.record_card_id, failure)
+            message = messages.inference_failed(row.inference_id, row.record_card_id, failure,
+                                                photo_ids=self._photo_ids(row))
         else:
             waited = int((self.clock() - row.invoked_at).total_seconds()) if row.invoked_at else 0
             if waited <= self.response_deadline_seconds:
                 return False
             log_event(STAGE, "no_response", level="ERROR", status=row.status, waited_seconds=waited, **ids)
             body = None
-            message = messages.no_response(row.inference_id, row.record_card_id, waited)
+            message = messages.no_response(row.inference_id, row.record_card_id, waited,
+                                           photo_ids=self._photo_ids(row))
 
         error = (message["result"] or {}).get("error")
         self.repo.mark_completed(row.inference_id, message["status"], _json_or_none(body),

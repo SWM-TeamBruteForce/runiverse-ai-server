@@ -48,6 +48,11 @@ def test_insert_and_get(received):
     assert received.get(IID) == new_row()
 
 
+def test_get_input_json(received):
+    assert json.loads(received.get_input_json(IID)) == json.loads(BODY)
+    assert received.get_input_json(OTHER) is None
+
+
 def test_find_by_offset(received):
     assert received.find_by_offset("dev.record-card.music.requested", 0, 7) == new_row()
     assert received.find_by_offset("dev.record-card.music.requested", 0, 8) is None

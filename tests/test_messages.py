@@ -19,6 +19,7 @@ from runiverse_ai_server.messages import (
     kafka_key,
     no_response,
     parse_request,
+    photo_image_ids,
     succeeded,
     unusable_output,
 )
@@ -27,6 +28,8 @@ IID = "3f2a9c1e-0000-4000-8000-000000000001"
 USER = "7b1e4c2a-1111-4aaa-8bbb-000000000001"  # 백엔드 ID는 UUID 문자열 (2026-11-17)
 CARD = "0c9d8e7f-2222-4ccc-9ddd-000000000101"
 PHOTO = "5a6b7c8d-3333-4eee-afff-000000000201"
+PHOTO2 = "5a6b7c8d-3333-4eee-afff-000000000202"
+PHOTO_IDS = [PHOTO, PHOTO2]
 
 
 def raw(obj) -> bytes:
@@ -167,6 +170,16 @@ def test_succeeded_rejects_unexpected_output(output):
 # ── 완료 메시지: 컨테이너 실패 ─────────────────────────────
 
 
+def _failure_result(code, message, photo_ids=PHOTO_IDS):
+    """실패도 성공 양식 + error (2026-11-19 백엔드 요청). 음악 값은 null, 사진 ID는 요청 값 그대로."""
+    return {
+        "base_music": {"s3_key": None, "duration_seconds": None},
+        "photo_music": [{"record_card_image_id": pid, "s3_key": None, "duration_seconds": None}
+                        for pid in photo_ids],
+        "error": {"code": code, "message": message},
+    }
+
+
 def _failed_inference(code, message):
     return {
         "inference_id": IID,
@@ -174,7 +187,7 @@ def _failed_inference(code, message):
         "status": "FAILED",
         "failed_stage": "INFERENCE",
         "invoke": {"http_status": 202, "error_code": None, "message": None},
-        "result": {"error": {"code": code, "message": message}},
+        "result": _failure_result(code, message),
     }
 
 
@@ -183,13 +196,14 @@ def test_inference_failed_extracts_code_and_message_only():
                        "error": {"code": "MUSIC_GENERATION_OOM", "message": "사진 0(CudaOutOfMemory)",
                                  "detail": [{"loc": "x"}]}})
 
-    assert inference_failed(IID, CARD, body) == _failed_inference("MUSIC_GENERATION_OOM", "사진 0(CudaOutOfMemory)")
+    assert inference_failed(IID, CARD, body, photo_ids=PHOTO_IDS) == \
+        _failed_inference("MUSIC_GENERATION_OOM", "사진 0(CudaOutOfMemory)")
 
 
 @pytest.mark.parametrize("body", ["Internal Server Error", json.dumps({"error": None}), json.dumps(["x"]),
                                   json.dumps({"error": {"message": "코드 없음"}})])
 def test_inference_failed_unreadable_file_uses_whole_content(body):
-    assert inference_failed(IID, CARD, body) == _failed_inference(INFERENCE_FAILED, body)
+    assert inference_failed(IID, CARD, body, photo_ids=PHOTO_IDS) == _failed_inference(INFERENCE_FAILED, body)
 
 
 # dev 엔드포인트에서 받은 실제 실패 파일 (2026-11-18 검증 ④). 버킷 이름만 바꿈
@@ -204,32 +218,32 @@ REAL_TIMEOUT_FILE = ("Timed out uploading object (bucket: bucket-test, "
 
 def test_real_container_400_file_is_container_json_as_is():
     # SageMaker가 감싸지 않고 컨테이너 응답 본문을 그대로 남긴다
-    msg = inference_failed(IID, CARD, REAL_INVALID_REQUEST_FILE)
+    msg = inference_failed(IID, CARD, REAL_INVALID_REQUEST_FILE, photo_ids=PHOTO_IDS)
 
     assert msg == _failed_inference("INVALID_REQUEST", "요청 형식이 잘못되었습니다.")
 
 
 def test_real_invocation_timeout_file_is_plain_text():
     # InvocationTimeoutSeconds 초과 시 SageMaker가 JSON이 아닌 문장 한 줄을 남긴다
-    msg = inference_failed(IID, CARD, REAL_TIMEOUT_FILE)
+    msg = inference_failed(IID, CARD, REAL_TIMEOUT_FILE, photo_ids=PHOTO_IDS)
 
     assert msg == _failed_inference(INFERENCE_FAILED, REAL_TIMEOUT_FILE)
 
 
 def test_unusable_output_is_inference_failed():
-    msg = unusable_output(IID, CARD, "성공 결과가 JSON이 아닙니다")
+    msg = unusable_output(IID, CARD, "성공 결과가 JSON이 아닙니다", photo_ids=PHOTO_IDS)
 
     assert msg == _failed_inference(INFERENCE_FAILED, "성공 결과가 JSON이 아닙니다")
 
 
 def test_no_response_is_inference_failed_with_waited_time():
-    msg = no_response(IID, CARD, waited_seconds=22500)
+    msg = no_response(IID, CARD, waited_seconds=22500, photo_ids=PHOTO_IDS)
 
     assert msg == _failed_inference(INFERENCE_FAILED, "응답 없음: 호출 후 22500초 동안 결과·실패 파일이 없습니다")
 
 
 def test_inference_failed_without_file():
-    msg = inference_failed(IID, CARD, None)
+    msg = inference_failed(IID, CARD, None, photo_ids=PHOTO_IDS)
 
     assert msg["result"]["error"]["code"] == INFERENCE_FAILED
     assert msg["result"]["error"]["message"]
@@ -240,7 +254,7 @@ def test_inference_failed_without_file():
 
 @pytest.mark.parametrize("http_status", [400, 500, 503, None])
 def test_invoke_failed(http_status):
-    msg = invoke_failed(IID, CARD, http_status, "ValidationError", "Endpoint not found")
+    msg = invoke_failed(IID, CARD, http_status, "ValidationError", "Endpoint not found", photo_ids=PHOTO_IDS)
 
     assert msg == {
         "inference_id": IID,
@@ -248,13 +262,14 @@ def test_invoke_failed(http_status):
         "status": "FAILED",
         "failed_stage": "INVOKE",
         "invoke": {"http_status": http_status, "error_code": "ValidationError", "message": "Endpoint not found"},
-        "result": None,
+        "result": _failure_result("ValidationError", "Endpoint not found"),
     }
 
 
 @pytest.mark.parametrize("record_card_id", [CARD, None])
 def test_invalid_message(record_card_id):
-    msg = invalid_message(InvalidMessage(record_card_id=record_card_id, reason="user_id가 없습니다"), IID)
+    msg = invalid_message(InvalidMessage(record_card_id=record_card_id, reason="user_id가 없습니다"), IID,
+                          photo_ids=PHOTO_IDS)
 
     assert msg == {
         "inference_id": IID,
@@ -262,19 +277,32 @@ def test_invalid_message(record_card_id):
         "status": "FAILED",
         "failed_stage": "INVOKE",
         "invoke": {"http_status": None, "error_code": INVALID_MESSAGE, "message": "user_id가 없습니다"},
-        "result": None,
+        "result": _failure_result(INVALID_MESSAGE, "user_id가 없습니다"),
     }
+
+
+def test_photo_image_ids_from_request_as_sent():
+    body = raw({"photos": [{"record_card_image_id": PHOTO, "image_key": "k", "caption": "c"},
+                           {"record_card_image_id": 12}, {"caption": "id 없음"}, "not object"]})
+
+    assert photo_image_ids(body) == [PHOTO, 12, None]  # 값은 바꾸지 않는다. 객체가 아닌 항목만 뺀다
+
+
+@pytest.mark.parametrize("body", [b"not json", raw(["x"]), raw({}), raw({"photos": None}), raw({"photos": "x"}),
+                                  None])
+def test_photo_image_ids_unreadable_is_empty(body):
+    assert photo_image_ids(body) == []
 
 
 # ── Kafka 키 ──────────────────────────────────────────────
 
 
 def test_kafka_key_is_card_id_string():
-    assert kafka_key(invoke_failed(IID, CARD, None, "x", "y")) == CARD.encode()
+    assert kafka_key(invoke_failed(IID, CARD, None, "x", "y", photo_ids=[])) == CARD.encode()
 
 
 def test_kafka_key_none_without_card_id():
-    assert kafka_key(invalid_message(InvalidMessage(record_card_id=None, reason="JSON이 아닙니다"), IID)) is None
+    assert kafka_key(invalid_message(InvalidMessage(record_card_id=None, reason="JSON이 아닙니다"), IID, photo_ids=[])) is None
 
 
 def test_invalid_message_id_is_uuid_fixed_per_kafka_message():

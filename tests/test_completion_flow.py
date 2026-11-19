@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeRepository
-from test_messages import CARD, USER
+from test_messages import CARD, PHOTO, PHOTO2, USER
 from runiverse_ai_server.completion_flow import CompletionFlow
 from runiverse_ai_server.messages import INFERENCE_FAILED
 from runiverse_ai_server.ports import KafkaRecord, PublishError
@@ -14,7 +14,9 @@ from runiverse_ai_server.request_flow import RequestFlow
 
 IID = "22222222-2222-4222-8222-222222222222"
 BODY = json.dumps({"user_id": USER, "record_card_id": CARD, "memo": None, "activity_type": "RACE",
-                   "running_summary": {}, "photos": []}).encode()
+                   "running_summary": {},
+                   "photos": [{"record_card_image_id": PHOTO, "image_key": "a.jpg", "caption": None},
+                              {"record_card_image_id": PHOTO2, "image_key": "b.jpg", "caption": None}]}).encode()
 OUTPUT = f"s3://bucket/async/outputs/test/{IID}.out"
 FAILURE = f"s3://bucket/async/failures/test/{IID}-error.out"
 SUCCESS_JSON = json.dumps({"user_id": USER, "record_card_id": CARD, "status": "SUCCEEDED", "review_mood": None,
@@ -91,6 +93,10 @@ def test_failure_file_publishes_container_error(flow, deps, invoked):
 
     [msg] = deps["publisher"].messages
     assert (msg["failed_stage"], msg["result"]["error"]["code"]) == ("INFERENCE", "INVALID_REQUEST")
+    assert msg["result"]["base_music"] == {"s3_key": None, "duration_seconds": None}
+    assert msg["result"]["photo_music"] == [
+        {"record_card_image_id": PHOTO, "s3_key": None, "duration_seconds": None},
+        {"record_card_image_id": PHOTO2, "s3_key": None, "duration_seconds": None}]  # 요청의 사진 ID
     row = deps["repo"].get(IID)
     assert (row.status, row.error_code, row.error_message, row.result_json) == \
         ("FAILED", "INVALID_REQUEST", "모르는 필드", failure)
@@ -125,6 +131,7 @@ def test_no_file_after_deadline_publishes_no_response(flow, deps, invoked, clock
     [msg] = deps["publisher"].messages
     assert (msg["failed_stage"], msg["result"]["error"]["code"]) == ("INFERENCE", INFERENCE_FAILED)
     assert "응답 없음" in msg["result"]["error"]["message"]
+    assert [p["record_card_image_id"] for p in msg["result"]["photo_music"]] == [PHOTO, PHOTO2]
     assert deps["repo"].get(IID).status == "FAILED"
 
 
