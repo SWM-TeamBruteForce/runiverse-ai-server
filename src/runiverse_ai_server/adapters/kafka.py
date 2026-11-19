@@ -7,7 +7,7 @@ from typing import Any
 
 from ..config import KafkaSettings
 from ..log import log_event
-from ..messages import kafka_key
+from ..messages import kafka_headers, kafka_key
 from ..ports import KafkaRecord, PublishError
 
 PUBLISH_TIMEOUT_SECONDS = 30
@@ -48,7 +48,8 @@ class KafkaPublisher:
     def publish(self, message: dict[str, Any]) -> None:
         errors = []
         self.producer.produce(self.topic, value=json.dumps(message, ensure_ascii=False).encode("utf-8"),
-                              key=kafka_key(message), on_delivery=lambda err, _msg: errors.append(err))
+                              key=kafka_key(message), headers=kafka_headers(message),
+                              on_delivery=lambda err, _msg: errors.append(err))
         if self.producer.flush(self.timeout) > 0:
             raise PublishError(f"{self.timeout:.0f}초 안에 발행 확인을 받지 못했습니다")
         if errors and errors[0] is not None:

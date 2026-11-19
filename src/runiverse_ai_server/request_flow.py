@@ -40,9 +40,10 @@ class RequestFlow:
         kafka = {"kafka_topic": record.topic, "kafka_partition": record.partition, "kafka_offset": record.offset}
         parsed = messages.parse_request(record.value)
         if isinstance(parsed, messages.InvalidMessage):
-            log_event(STAGE, "invalid_message", record_card_id=parsed.record_card_id, level="WARNING",
-                      reason=parsed.reason, **kafka)
-            self.publisher.publish(messages.invalid_message(parsed))
+            inference_id = messages.invalid_message_id(record.topic, record.partition, record.offset)
+            log_event(STAGE, "invalid_message", inference_id=inference_id, record_card_id=parsed.record_card_id,
+                      level="WARNING", reason=parsed.reason, **kafka)
+            self.publisher.publish(messages.invalid_message(parsed, inference_id))
             return
 
         row = self.repo.find_by_offset(record.topic, record.partition, record.offset)

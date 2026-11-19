@@ -7,7 +7,7 @@ import pytest
 
 from fakes import FakeInvoker, FakeObjectStore, FakePublisher, FakeRepository
 from test_messages import CARD, USER
-from runiverse_ai_server.messages import INVALID_MESSAGE
+from runiverse_ai_server.messages import INVALID_MESSAGE, invalid_message_id
 from runiverse_ai_server.ports import InvokeError, KafkaRecord, PublishError, UploadError
 from runiverse_ai_server.request_flow import RequestFlow
 
@@ -51,9 +51,19 @@ def test_invalid_message_publishes_failure_without_db_or_invoke(flow, deps):
     flow.handle(record(json.dumps({"record_card_id": CARD}).encode()))
 
     [msg] = deps["publisher"].messages
-    assert (msg["inference_id"], msg["record_card_id"], msg["invoke"]["error_code"]) == (None, CARD, INVALID_MESSAGE)
+    assert (msg["inference_id"], msg["record_card_id"], msg["invoke"]["error_code"]) == \
+        (invalid_message_id(TOPIC, 0, 7), CARD, INVALID_MESSAGE)
+    assert msg["inference_id"] != IID  # 정상 요청용 ID 생성기를 쓰지 않는다
     assert deps["repo"].rows == {}
     assert deps["invoker"].calls == []
+
+
+def test_invalid_message_redelivery_keeps_same_inference_id(flow, deps):
+    flow.handle(record(b"not json"))
+    flow.handle(record(b"not json"))
+
+    first, second = deps["publisher"].messages
+    assert first["inference_id"] == second["inference_id"] is not None
 
 
 @pytest.mark.parametrize("error", [InvokeError(400, "ValidationError", "Endpoint ep not found"),

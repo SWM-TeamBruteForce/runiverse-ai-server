@@ -1,6 +1,7 @@
 """messages.py: 요청 파싱, S3 키, 완료 메시지 조립 (Notion 4.1 정본)."""
 
 import json
+import uuid
 
 import pytest
 
@@ -13,6 +14,7 @@ from runiverse_ai_server.messages import (
     inference_failed,
     input_key,
     invalid_message,
+    invalid_message_id,
     invoke_failed,
     kafka_key,
     no_response,
@@ -252,10 +254,10 @@ def test_invoke_failed(http_status):
 
 @pytest.mark.parametrize("record_card_id", [CARD, None])
 def test_invalid_message(record_card_id):
-    msg = invalid_message(InvalidMessage(record_card_id=record_card_id, reason="user_id가 없습니다"))
+    msg = invalid_message(InvalidMessage(record_card_id=record_card_id, reason="user_id가 없습니다"), IID)
 
     assert msg == {
-        "inference_id": None,
+        "inference_id": IID,
         "record_card_id": record_card_id,
         "status": "FAILED",
         "failed_stage": "INVOKE",
@@ -272,4 +274,13 @@ def test_kafka_key_is_card_id_string():
 
 
 def test_kafka_key_none_without_card_id():
-    assert kafka_key(invalid_message(InvalidMessage(record_card_id=None, reason="JSON이 아닙니다"))) is None
+    assert kafka_key(invalid_message(InvalidMessage(record_card_id=None, reason="JSON이 아닙니다"), IID)) is None
+
+
+def test_invalid_message_id_is_uuid_fixed_per_kafka_message():
+    first = invalid_message_id("test.record-card.music.requested", 0, 7)
+
+    assert str(uuid.UUID(first)) == first
+    assert invalid_message_id("test.record-card.music.requested", 0, 7) == first  # 같은 메시지 재수신 → 같은 값
+    assert invalid_message_id("test.record-card.music.requested", 0, 8) != first
+    assert invalid_message_id("test.record-card.music.requested", 1, 7) != first

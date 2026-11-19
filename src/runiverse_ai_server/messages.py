@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -139,12 +140,26 @@ def invoke_failed(inference_id: str, record_card_id: str, http_status: int | Non
     return _message(inference_id, record_card_id, "FAILED", "INVOKE", invoke, None)
 
 
-def invalid_message(invalid: InvalidMessage) -> CompletionMessage:
+# 요청 메시지 오류용 ID 이름공간. 바꾸면 같은 메시지 재발행 때 ID가 달라진다
+_INVALID_MESSAGE_NAMESPACE = uuid.UUID("6f1d3c52-8a4e-4b7f-9c2d-5e0a1b7f3d64")
+
+
+def invalid_message_id(topic: str, partition: int, offset: int) -> str:
+    """요청 메시지 오류는 DB 행이 없다 → Kafka 위치로 ID를 정해 같은 메시지 재수신 때도 같은 값을 쓴다."""
+    return str(uuid.uuid5(_INVALID_MESSAGE_NAMESPACE, f"{topic}:{partition}:{offset}"))
+
+
+def invalid_message(invalid: InvalidMessage, inference_id: str) -> CompletionMessage:
     invoke = {"http_status": None, "error_code": INVALID_MESSAGE, "message": invalid.reason}
-    return _message(None, invalid.record_card_id, "FAILED", "INVOKE", invoke, None)
+    return _message(inference_id, invalid.record_card_id, "FAILED", "INVOKE", invoke, None)
 
 
 def kafka_key(message: CompletionMessage) -> bytes | None:
     """완료 메시지 키 = str(record_card_id). 없으면 키 없이 발행."""
     record_card_id = message["record_card_id"]
     return None if record_card_id is None else str(record_card_id).encode("utf-8")
+
+
+def kafka_headers(message: CompletionMessage) -> list[tuple[str, bytes]]:
+    """백엔드 중복 처리용 헤더 inference_id (본문 값과 같다)."""
+    return [("inference_id", str(message["inference_id"]).encode("utf-8"))]
