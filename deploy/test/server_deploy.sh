@@ -7,7 +7,7 @@
 set -euo pipefail
 
 : "${IMAGE:?IMAGE가 필요합니다}"
-BASE=/opt/runiverse-ai-server
+BASE="${BASE:-/opt/runiverse-ai-server}"
 NAME=runiverse-ai-server
 TAG="${IMAGE##*:}"
 LOGS="$BASE/deploy-logs"
@@ -29,19 +29,44 @@ if ! docker run --rm "${RUN_OPTS[@]}" "$IMAGE" python -m runiverse_ai_server.mig
 fi
 echo "✅ 마이그레이션 · $(tail -n 1 "$LOGS/migrate.log")"
 
-docker rm -f "$NAME" > /dev/null 2>&1 || true
-docker run -d --name "$NAME" --restart unless-stopped --stop-timeout 30 \
-  --log-opt max-size=10m --log-opt max-file=5 \
-  "${RUN_OPTS[@]}" "$IMAGE" > /dev/null
+start() {  # 기존 컨테이너를 지우고 $1 이미지로 띄운다
+  docker rm -f "$NAME" > /dev/null 2>&1 || true
+  docker run -d --name "$NAME" --restart unless-stopped --stop-timeout 30 \
+    --log-opt max-size=10m --log-opt max-file=5 \
+    "${RUN_OPTS[@]}" "$1" > /dev/null
+}
 
-# 시작 확인: 서버가 started 이벤트를 남길 때까지 최대 60초
-for _ in $(seq 1 12); do
-  if docker logs "$NAME" 2>&1 | grep -q '"event": "started"'; then
-    echo "$TAG" > "$BASE/deployed_tag"
-    echo "✅ 실행 $TAG"
-    exit 0
-  fi
-  sleep 5
-done
-echo "❌ 시작 확인 실패 · 서버에서 deploy.sh status로 로그 확인"
+started() {  # 서버가 started 이벤트를 남길 때까지 최대 60초
+  for _ in $(seq 1 12); do
+    # grep -q는 먼저 끝나 docker logs가 SIGPIPE → pipefail에서 실패로 보임. 끝까지 읽는다
+    docker logs "$NAME" 2>&1 | grep '"event": "started"' > /dev/null && return 0
+    sleep 5
+  done
+  return 1
+}
+
+# 되돌릴 이미지 = 지금 실행 중인 컨테이너의 이미지 (처음 배포면 없음)
+PREVIOUS="$(docker inspect -f '{{.Config.Image}}' "$NAME" 2>/dev/null || true)"
+
+start "$IMAGE"
+if started; then
+  echo "$TAG" > "$BASE/deployed_tag"
+  echo "✅ 실행 $TAG"
+  docker image prune -a -f > /dev/null 2>&1 || true  # 실행 중이 아닌 이미지 정리 (ECR에 남아 있음)
+  exit 0
+fi
+
+docker logs "$NAME" > "$LOGS/failed-start.log" 2>&1 || true
+echo "❌ 시작 확인 실패 $TAG ($LOGS/failed-start.log)"
+if [ -z "$PREVIOUS" ] || [ "$PREVIOUS" = "$IMAGE" ]; then
+  echo "⚠️ 되돌릴 이전 이미지 없음 · 서버 중지 상태"
+  docker rm -f "$NAME" > /dev/null 2>&1 || true
+  exit 1
+fi
+start "$PREVIOUS"
+if started; then
+  echo "↩️ 이전 이미지로 되돌림 ${PREVIOUS##*:}"
+else
+  echo "⚠️ 되돌림도 시작 확인 실패 ${PREVIOUS##*:} · deploy.sh status로 확인"
+fi
 exit 1
