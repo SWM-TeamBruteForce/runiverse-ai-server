@@ -81,6 +81,10 @@ class FakeRepository:
     def get(self, inference_id: str) -> InferenceRecord | None:
         return self.rows.get(inference_id)
 
+    def get_input_json(self, inference_id: str) -> str | None:
+        body = self.input_json.get(inference_id)
+        return None if body is None else body.decode("utf-8")
+
     def list_pending(self, limit: int) -> list[InferenceRecord]:
         rows = [r for r in self.rows.values() if r.published_at is None and (
             r.status in ("INVOKING", "INVOKED", "SUCCEEDED") or (r.status == "FAILED" and r.failed_stage == "INFERENCE"))]

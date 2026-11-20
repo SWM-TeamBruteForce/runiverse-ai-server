@@ -33,12 +33,12 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 - **수정 없이 S3에 올린다.** 컨테이너는 모르는 필드를 400으로 거부한다 (`running_summary`만 예외)
 - 입력 검증은 컨테이너 몫. AI 서버는 JSON 파싱과 `user_id`·`record_card_id`만 본다
 - 백엔드 ID(`user_id`·`record_card_id`·`photos[].record_card_image_id`)는 **UUID 문자열** (2026-11-17). UUID 모양(8-4-4-4-12 16진수)만 받고, 받은 값 그대로 저장·발행 (대소문자 변환 없음). DB는 `CHAR(36)`
-- 파싱 실패·ID 누락 → 호출 없이 실패 발행 (`failed_stage=INVOKE`, `invoke.http_status=null`, `invoke.error_code=INVALID_MESSAGE`, `inference_id=null`). `record_card_id`는 본문에서 읽히면 담고 아니면 `null`
+- 파싱 실패·ID 누락 → 호출 없이 실패 발행 (`failed_stage=INVOKE`, `invoke.http_status=null`, `invoke.error_code=INVALID_MESSAGE`). `inference_id`는 Kafka 위치(topic·partition·offset)로 만든 고정 UUID(uuid5, 같은 메시지 재수신 시 같은 값), DB 기록 없음. `record_card_id`는 본문에서 읽히면 담고 아니면 `null`
 - Kafka는 같은 메시지를 두 번 줄 수 있다. **같은 메시지 재수신만** DB의 `(topic, partition, offset)`으로 감지해 호출을 건너뛴다. 재요청은 offset이 달라 요청건대로 처리한다 (요청 ID가 없어 내용으로 중복을 판별하지 않음)
 
 **② 입력 업로드·호출**
 - `inference_id`는 **AI 서버가 호출 전에 생성**한다 (S3 경로에 필요, SageMaker 자동 할당 값을 쓰지 않음)
-- 호출 거부(400·500·503) → 컨테이너 실행 없이 바로 실패 발행 (`failed_stage=INVOKE`, `result=null`)
+- 호출 거부(400·500·503) → 컨테이너 실행 없이 바로 실패 발행 (`failed_stage=INVOKE`, `result.error`=`invoke`의 코드·메시지)
 - SageMaker 응답 없음(S3 업로드 실패·네트워크 오류·시간 초과) → `invoke.http_status=null`로 같은 실패 발행
 - 202 → `inference_id`와 응답 헤더의 `OutputLocation`·`FailureLocation` 보관 후 결과 파일 대기. 오프셋은 202 이후 커밋
 
@@ -58,13 +58,15 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 | 경우 | `status` | `failed_stage` | `invoke.http_status` | `result` |
 |---|---|---|---|---|
 | 성공 | `SUCCEEDED` | `null` | 202 | `{base_music: {s3_key, duration_seconds}, photo_music: [{record_card_image_id, s3_key, duration_seconds}]}` |
-| 컨테이너 실패 | `FAILED` | `INFERENCE` | 202 | `{error: {code, message}}` |
-| 컨테이너 응답 없음 | `FAILED` | `INFERENCE` | 202 | `error.code=INFERENCE_FAILED` |
-| 호출 거부 | `FAILED` | `INVOKE` | 400·500·503 | `null`, 원인은 `invoke.error_code`·`message` |
-| SageMaker 응답 없음 | `FAILED` | `INVOKE` | `null` | `null`, 원인은 `invoke.error_code`·`message` |
-| 요청 메시지 오류 | `FAILED` | `INVOKE` | `null` | `null`, `invoke.error_code=INVALID_MESSAGE`, `inference_id=null` |
+| 컨테이너 실패 | `FAILED` | `INFERENCE` | 202 | 실패 양식, `error`=실패 파일의 `{code, message}` |
+| 컨테이너 응답 없음 | `FAILED` | `INFERENCE` | 202 | 실패 양식, `error.code=INFERENCE_FAILED` |
+| 호출 거부 | `FAILED` | `INVOKE` | 400·500·503 | 실패 양식, `error`=`invoke.error_code`·`message` |
+| SageMaker 응답 없음 | `FAILED` | `INVOKE` | `null` | 실패 양식, `error`=`invoke.error_code`·`message` |
+| 요청 메시지 오류 | `FAILED` | `INVOKE` | `null` | 실패 양식, `error.code=INVALID_MESSAGE` |
 
-- 식별자: `inference_id`·`record_card_id` (`user_id`는 넣지 않음)
+- 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 요청 `photos[]` 순서, 읽을 수 없으면 `[]`
+- 식별자: `inference_id`·`record_card_id` (`user_id`는 넣지 않음). **모든 완료 메시지에 `inference_id`가 있다**
+- Kafka: 키 `record_card_id`(없으면 키 없음), **헤더 `inference_id`**(본문 값과 같음, 백엔드 중복 처리용)
 - 컨테이너 `error.code`: `INVALID_REQUEST`(400) `MUSIC_GENERATION_OOM`(500) `MUSIC_GENERATION_FAILED`(500) `MUSIC_UPLOAD_FAILED`(502) `INTERNAL_ERROR`(500)
 
 **오류 원칙**

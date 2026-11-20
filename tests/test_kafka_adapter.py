@@ -54,8 +54,9 @@ class FakeProducer:
         self.error = error
         self.remaining = remaining
 
-    def produce(self, topic, value, key, on_delivery):
+    def produce(self, topic, value, key, headers, on_delivery):
         self.produced.append((topic, key, value))
+        self.headers = headers
         self._callback = on_delivery
 
     def flush(self, timeout):
@@ -76,22 +77,30 @@ def test_publish_sends_json_with_card_key():
     assert "한글".encode() in value  # \uXXXX로 바꾸지 않는다
 
 
+def test_publish_puts_inference_id_header():
+    producer = FakeProducer()
+
+    KafkaPublisher(producer, "t").publish({"inference_id": "iid-1", "record_card_id": CARD})
+
+    assert producer.headers == [("inference_id", b"iid-1")]
+
+
 def test_publish_without_card_id_has_no_key():
     producer = FakeProducer()
 
-    KafkaPublisher(producer, "t").publish({"record_card_id": None})
+    KafkaPublisher(producer, "t").publish({"inference_id": "x", "record_card_id": None})
 
     assert producer.produced[0][1] is None
 
 
 def test_publish_delivery_error_raises():
     with pytest.raises(PublishError):
-        KafkaPublisher(FakeProducer(error="broker down"), "t").publish({"record_card_id": CARD})
+        KafkaPublisher(FakeProducer(error="broker down"), "t").publish({"inference_id": "x", "record_card_id": CARD})
 
 
 def test_publish_timeout_raises():
     with pytest.raises(PublishError, match="확인"):
-        KafkaPublisher(FakeProducer(remaining=1), "t").publish({"record_card_id": CARD})
+        KafkaPublisher(FakeProducer(remaining=1), "t").publish({"inference_id": "x", "record_card_id": CARD})
 
 
 # ── 소비·커밋 ──────────────────────────────────────────

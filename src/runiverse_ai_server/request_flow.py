@@ -40,9 +40,11 @@ class RequestFlow:
         kafka = {"kafka_topic": record.topic, "kafka_partition": record.partition, "kafka_offset": record.offset}
         parsed = messages.parse_request(record.value)
         if isinstance(parsed, messages.InvalidMessage):
-            log_event(STAGE, "invalid_message", record_card_id=parsed.record_card_id, level="WARNING",
-                      reason=parsed.reason, **kafka)
-            self.publisher.publish(messages.invalid_message(parsed))
+            inference_id = messages.invalid_message_id(record.topic, record.partition, record.offset)
+            log_event(STAGE, "invalid_message", inference_id=inference_id, record_card_id=parsed.record_card_id,
+                      level="WARNING", reason=parsed.reason, **kafka)
+            self.publisher.publish(messages.invalid_message(
+                parsed, inference_id, photo_ids=messages.photo_image_ids(record.value)))
             return
 
         row = self.repo.find_by_offset(record.topic, record.partition, record.offset)
@@ -55,12 +57,12 @@ class RequestFlow:
             )
             self.repo.insert_received(row, parsed.body)
             log_event(STAGE, "received", inference_id=row.inference_id, record_card_id=row.record_card_id, **kafka)
-        elif not self._resume(row):
+        elif not self._resume(row, parsed.body):
             return
 
         self._upload_and_invoke(row, parsed.body)
 
-    def _resume(self, row: InferenceRecord) -> bool:
+    def _resume(self, row: InferenceRecord, body: bytes) -> bool:
         """같은 offset 재수신. True면 업로드부터 이어서 처리한다."""
         ids = {"inference_id": row.inference_id, "record_card_id": row.record_card_id}
         if row.status in ("RECEIVED", "UPLOADED"):
@@ -70,7 +72,7 @@ class RequestFlow:
             log_event(STAGE, "redelivered_republish", **ids)
             self._publish(row.inference_id, messages.invoke_failed(
                 row.inference_id, row.record_card_id, row.invoke_http_status, row.invoke_error_code,
-                row.invoke_message))
+                row.invoke_message, photo_ids=messages.photo_image_ids(body)))
             return False
         # INVOKING: 호출됐는지 모른다 → 다시 부르지 않고 알림 또는 무응답 점검(설계 4.3)에 맡긴다
         log_event(STAGE, "redelivered_skip", status=row.status, **ids)
@@ -91,7 +93,8 @@ class RequestFlow:
                       error_code=error.error_code, error_message=error.message, **ids)
             self.repo.mark_invoke_failed(row.inference_id, error)
             self._publish(row.inference_id, messages.invoke_failed(
-                row.inference_id, row.record_card_id, http_status, error.error_code, error.message))
+                row.inference_id, row.record_card_id, http_status, error.error_code, error.message,
+                photo_ids=messages.photo_image_ids(body)))
             return
 
         self.repo.mark_invoked(row.inference_id, invocation)

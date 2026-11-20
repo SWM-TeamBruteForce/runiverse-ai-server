@@ -93,6 +93,14 @@ class MySQLRepository:
             return None
         return self._one("inference_id = %s", [inference_id])
 
+    def get_input_json(self, inference_id: str) -> str | None:
+        try:
+            uuid.UUID(inference_id)
+        except ValueError:
+            return None
+        row = self._execute("SELECT input_json FROM inference_request WHERE inference_id = %s", [inference_id])
+        return None if row is None else row[0]
+
     def list_pending(self, limit: int) -> list[InferenceRecord]:
         with self._cursor() as cur:
             cur.execute(

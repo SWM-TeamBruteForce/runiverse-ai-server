@@ -41,11 +41,11 @@
 ```txt
 [요청 토픽] {env}.record-card.music.requested
    ▼ ① 소비
-   │     └ JSON 아님·ID 누락 → ⑦로 바로 (failed_stage=INVOKE, http_status=null, error_code=INVALID_MESSAGE)
+   │     └ JSON 아님·ID 누락 → ⑦로 바로 (failed_stage=INVOKE, http_status=null, error_code=INVALID_MESSAGE, inference_id=uuid5(Kafka 위치))
    ▼ ② inference_id = UUID
    ▼ ③ 입력 JSON → s3://{AI_BUCKET}/async/inputs/{env}/{record_card_id}/{inference_id}.json
    ▼ ④ InvokeEndpointAsync(EndpointName, InputLocation, InferenceId=inference_id, ContentType=application/json)
-   │     ├ 거부(400·500·503) 또는 응답 없음(http_status=null) → ⑦로 바로 (failed_stage=INVOKE, result=null)
+   │     ├ 거부(400·500·503) 또는 응답 없음(http_status=null) → ⑦로 바로 (failed_stage=INVOKE, result=실패 양식)
    │     └ 202 → inference_id ↔ record_card_id, OutputLocation·FailureLocation 보관
    ▼ (컨테이너 처리, 수 분)
    ▼ ⑤ 결과·실패 파일 주기 확인 (S3, 2026-11-16 SNS·SQS 대신)
@@ -101,11 +101,14 @@
 | 경우 | `status` | `failed_stage` | `invoke.http_status` | `result` |
 |---|---|---|---|---|
 | 성공 | `SUCCEEDED` | `null` | 202 | 출력 위치 JSON(4.2.1)에서 `base_music`의 `s3_key`·`duration_seconds`, `photo_music[]`의 `record_card_image_id`·`s3_key`·`duration_seconds` 추출 |
-| 컨테이너 실패 | `FAILED` | `INFERENCE` | 202 | 실패 위치 JSON(4.2.2)에서 `{error: {code, message}}` 추출 [협의] |
-| 컨테이너 응답 없음 (중단·시간 초과) | `FAILED` | `INFERENCE` | 202 | AI 서버가 `error.code=INFERENCE_FAILED`로 만듦. 실패 파일이 JSON이 아니면 `message`=파일 내용 전체 |
-| 호출 거부 | `FAILED` | `INVOKE` | 400·500·503 | `null`. SageMaker 오류 이름·메시지를 `invoke`에 |
-| SageMaker 응답 없음 (S3 업로드 실패·네트워크 오류) | `FAILED` | `INVOKE` | `null` | `null`. 원인은 `invoke.error_code`·`message` (2026-11-14) |
-| 요청 메시지 오류 (JSON 아님·ID 누락) | `FAILED` | `INVOKE` | `null` | `null`. `invoke.error_code=INVALID_MESSAGE`, `inference_id=null`, `record_card_id`는 읽히면 담고 아니면 `null` (2026-11-14) |
+| 컨테이너 실패 | `FAILED` | `INFERENCE` | 202 | 실패 양식. `error`=실패 위치 JSON(4.2.2)의 `{code, message}` |
+| 컨테이너 응답 없음 (중단·시간 초과) | `FAILED` | `INFERENCE` | 202 | 실패 양식. `error.code=INFERENCE_FAILED`. 실패 파일이 JSON이 아니면 `message`=파일 내용 전체 |
+| 호출 거부 | `FAILED` | `INVOKE` | 400·500·503 | 실패 양식. SageMaker 오류 이름·메시지를 `invoke`와 `error`에 |
+| SageMaker 응답 없음 (S3 업로드 실패·네트워크 오류) | `FAILED` | `INVOKE` | `null` | 실패 양식. 원인은 `invoke.error_code`·`message` (`error`에도) |
+| 요청 메시지 오류 (JSON 아님·ID 누락) | `FAILED` | `INVOKE` | `null` | 실패 양식. `error.code=INVALID_MESSAGE`. `inference_id`=Kafka 위치로 만든 uuid5, `record_card_id`는 읽히면 담고 아니면 `null` |
+
+- 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 요청 `photos[]` 순서(DB `input_json`에서 읽음), 읽을 수 없으면 `[]`
+- **모든 완료 메시지에 `inference_id`** (본문 + Kafka 헤더 `inference_id`, 2026-11-19 백엔드 중복 처리 요청)
 
 - `generation_id`는 없다. 백엔드는 `record_card_id`·사진 ID로 결과를 자기 요청과 연결한다
 - **AI 출력(컨테이너 결과 전체)과 완료 메시지는 형식이 다르다.** `user_id`·`review_mood`·`photo_index`·`image_key`·`manifest`·`error.detail`은 넣지 않는다 (S3 `async/outputs/`·`failures/`에만, 7·14일 만료)
