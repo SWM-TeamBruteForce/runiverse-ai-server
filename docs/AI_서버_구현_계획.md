@@ -108,7 +108,7 @@
 | 요청 메시지 오류 (JSON 아님·ID 누락) | `FAILED` | `INVOKE` | `null` | 실패 양식. `error.code=INVALID_MESSAGE`. `inference_id`=Kafka 위치로 만든 uuid5, `record_card_id`는 읽히면 담고 아니면 `null` |
 
 - 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 요청 `photos[]` 순서(DB `input_json`에서 읽음), 읽을 수 없으면 `[]`
-- **모든 완료 메시지에 `inference_id`** (본문 + Kafka 헤더 `inference_id`, 2026-11-19 백엔드 중복 처리 요청)
+- **모든 완료 메시지에 `inference_id`** (본문 + Kafka 헤더 `id`, 2026-11-25 백엔드 요청으로 헤더 이름 변경)
 
 - `generation_id`는 없다. 백엔드는 `record_card_id`·사진 ID로 결과를 자기 요청과 연결한다
 - **AI 출력(컨테이너 결과 전체)과 완료 메시지는 형식이 다르다.** `user_id`·`review_mood`·`photo_index`·`image_key`·`manifest`·`error.detail`은 넣지 않는다 (S3 `async/outputs/`·`failures/`에만, 7·14일 만료)

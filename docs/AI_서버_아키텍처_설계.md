@@ -249,7 +249,7 @@ if prev is not None:
 
 - 위 결정은 모두 Notion「AI 기능 아키텍처 및 data 입출력」3장·4.1·4.3에 반영함 (2026-11-14)
 - `record_card_id`가 `null`인 완료 메시지는 Kafka 키 없이 발행
-- 모든 완료 메시지에 Kafka 헤더 `inference_id` (본문 값과 같음, 2026-11-19 백엔드 중복 처리 요청)
+- 모든 완료 메시지에 Kafka 헤더 `id` (값 = 본문 `inference_id`, 2026-11-25 백엔드 요청으로 헤더 이름 변경)
 - 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 DB `input_json.photos` 순서
 
 ---

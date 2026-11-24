@@ -191,5 +191,5 @@ def kafka_key(message: CompletionMessage) -> bytes | None:
 
 
 def kafka_headers(message: CompletionMessage) -> list[tuple[str, bytes]]:
-    """백엔드 중복 처리용 헤더 inference_id (본문 값과 같다)."""
-    return [("inference_id", str(message["inference_id"]).encode("utf-8"))]
+    """백엔드 중복 처리용 헤더 id = 본문 inference_id 값."""
+    return [("id", str(message["inference_id"]).encode("utf-8"))]

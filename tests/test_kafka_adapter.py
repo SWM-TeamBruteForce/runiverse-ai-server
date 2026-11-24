@@ -82,7 +82,7 @@ def test_publish_puts_inference_id_header():
 
     KafkaPublisher(producer, "t").publish({"inference_id": "iid-1", "record_card_id": CARD})
 
-    assert producer.headers == [("inference_id", b"iid-1")]
+    assert producer.headers == [("id", b"iid-1")]
 
 
 def test_publish_without_card_id_has_no_key():
