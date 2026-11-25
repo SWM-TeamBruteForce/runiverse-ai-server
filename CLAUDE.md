@@ -66,7 +66,7 @@ Runiverse 앱의 **AI 음악 생성 요청을 중계**하는 서버 저장소.
 
 - 실패 `result` = 성공 양식에 `null` + `error`: `{base_music: {s3_key: null, duration_seconds: null}, photo_music: [{record_card_image_id: 요청 값, s3_key: null, duration_seconds: null}], error: {code, message}}` (2026-11-19 백엔드 요청). `photo_music`은 요청 `photos[]` 순서, 읽을 수 없으면 `[]`
 - 식별자: `inference_id`·`record_card_id` (`user_id`는 넣지 않음). **모든 완료 메시지에 `inference_id`가 있다**
-- Kafka: 키 `record_card_id`(없으면 키 없음), **헤더 `inference_id`**(본문 값과 같음, 백엔드 중복 처리용)
+- Kafka: 키 `record_card_id`(없으면 키 없음), **헤더 `id`**(값 = 본문 `inference_id`, 백엔드 중복 처리용)
 - 컨테이너 `error.code`: `INVALID_REQUEST`(400) `MUSIC_GENERATION_OOM`(500) `MUSIC_GENERATION_FAILED`(500) `MUSIC_UPLOAD_FAILED`(502) `INTERNAL_ERROR`(500)
 
 **오류 원칙**
