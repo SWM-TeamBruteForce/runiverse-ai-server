@@ -34,8 +34,7 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: pyproject.toml
-      # cryptography: 비밀번호가 캐시되지 않은 새 MySQL 8.4에 PyMySQL이 접속할 때 필요 (caching_sha2_password)
-      - run: pip install -e ".[dev]" cryptography
+      - run: pip install -e ".[dev]"
       - name: pytest
         env:
           PYTHONUTF8: "1"
