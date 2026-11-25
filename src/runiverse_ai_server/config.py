@@ -30,8 +30,8 @@ class KafkaSettings(BaseSettings):
 
     model_config = SettingsConfigDict(case_sensitive=False, validate_default=True, frozen=True)
 
-    # Kafka. dev·test만 (2026-11-17: 백엔드 요청 이벤트가 test 토픽으로 나감). 운영 값은 미정(계획 9장 ⑦)
-    kafka_env: Literal["dev", "test"]
+    # Kafka. 토픽·계정·그룹 이름이 이 값에서 만들어진다 (운영 prod: 2026-11-25 백엔드 Kafka 문서)
+    kafka_env: Literal["dev", "test", "prod"]
     kafka_bootstrap_servers: str = NonEmpty
     kafka_password: SecretStr
     kafka_ca_path: FilePath = "config/local/kafka-ca.crt"  # 실행 디렉터리 기준

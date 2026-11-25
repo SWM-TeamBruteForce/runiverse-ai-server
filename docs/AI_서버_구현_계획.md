@@ -120,11 +120,11 @@
 
 | 값 | 로컬 | 테스트 | 운영 |
 |---|---|---|---|
-| `KAFKA_ENV` | `dev` | `test` | 미정 |
+| `KAFKA_ENV` | `dev` | `test` | `prod` |
 | `KAFKA_PASSWORD` | 환경 변수로만 전달. **코드·문서·로그에 쓰지 않음** | | |
 | `AI_BUCKET_NAME` | `<AI_BUCKET_TEST>` | `<AI_BUCKET_TEST>` | `<AI_BUCKET_PROD>` |
 | `INPUT_PREFIX` | `async/inputs/local` | `async/inputs/test` | `async/inputs/prod` |
-| `ENDPOINT_NAME` | `runiverse-music-test-v1` | `runiverse-music-test-v1` | 미정 |
+| `ENDPOINT_NAME` | `runiverse-music-test-v1` | `runiverse-music-test-v1` | `runiverse-music-prod-v1` |
 | 리전 | `ap-northeast-2` | 동일 | 동일 |
 
 - ⚠️ **개발에는 `KAFKA_ENV=dev`만** 쓴다. `test`는 테스트 서버와 메시지가 겹친다
@@ -199,7 +199,7 @@
 | ④ | ~~SNS 수신 방식~~ | ✅ SNS·SQS 쓰지 않음. 202 응답의 결과 위치를 S3에서 주기적으로 확인 (2026-11-16, 2026-11-13 SNS→SQS 결정 대체) | AI |
 | ⑤ | ~~파티션 키~~ | ✅ 완료 메시지 키 = `record_card_id`(문자열). `null`이면 키 없이 발행. Notion 4.1 반영 (2026-11-14) | 백엔드 |
 | ⑥ | 기술 스택·배포 위치 | ✅ 스택: Python 3.11 · confluent-kafka · boto3 · PyMySQL (2026-11-16). test는 백엔드 test 서버 EC2에 같이 배포, AI DB는 그 서버의 MySQL 컨테이너 (2026-11-16). ⏳ AI 서버 실행 환경(EC2·ECS 등)·AWS 자격 증명 방식은 미정 | AI |
-| ⑦ | 운영 환경 값 | 운영 `KAFKA_ENV`·엔드포인트 이름 | 백엔드 + AI |
+| ⑦ | ~~운영 환경 값~~ | ✅ `KAFKA_ENV=prod`, 엔드포인트 `runiverse-music-prod-v1` (2026-11-25) | 백엔드 + AI |
 | ⑧ | 메시지 버전 필드 | 스키마 변경 대비 `version` 필드 여부 | 백엔드 + AI |
 | ⑨ | ~~계약에 없는 실패~~ | ✅ S3 업로드 실패·응답 없는 호출·요청 메시지 오류 → `INVOKE` + `http_status=null`. Notion 3장·4.1 반영 (2026-11-14) | 백엔드 + AI |
 
