@@ -61,12 +61,23 @@ def test_fails_when_required_value_missing(env, missing):
         load_settings()
 
 
-@pytest.mark.parametrize("value", ["prod", "local", ""])  # dev·test만 사용 (2026-11-17)
-def test_rejects_kafka_env_other_than_dev_or_test(env, value):
+@pytest.mark.parametrize("value", ["staging", "local", ""])  # dev·test·prod만 사용 (2026-11-25)
+def test_rejects_unknown_kafka_env(env, value):
     env.setenv("KAFKA_ENV", value)
 
     with pytest.raises(ConfigError, match="kafka_env"):
         load_settings()
+
+
+def test_prod_kafka_env_uses_prod_account_group_and_topics(env):
+    env.setenv("KAFKA_ENV", "prod")
+
+    settings = load_settings(KafkaSettings)
+
+    assert settings.kafka_username == "prod.runiverse-ai"
+    assert settings.kafka_group_id == "prod.runiverse-ai.record-card-music"
+    assert settings.request_topic == "prod.record-card.music.requested"
+    assert settings.completion_topic == "prod.record-card.music.generated"
 
 
 def test_test_kafka_env_uses_test_account_group_and_topics(env):
@@ -108,7 +119,7 @@ def test_rejects_timeout_out_of_sagemaker_range(env, key, value):
 
 
 def test_error_message_does_not_leak_secrets(env):
-    env.setenv("KAFKA_ENV", "prod")  # 다른 값이 틀려도 비밀번호는 메시지에 없어야 한다
+    env.setenv("KAFKA_ENV", "staging")  # 다른 값이 틀려도 비밀번호는 메시지에 없어야 한다
 
     with pytest.raises(ConfigError) as exc:
         load_settings()
